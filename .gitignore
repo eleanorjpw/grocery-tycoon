@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# local virtual environment (each player's machine makes its own)
+.venv/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# runtime
+.last_ip
+.DS_Store
