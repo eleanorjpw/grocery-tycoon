@@ -10,6 +10,16 @@ build/
 dist/
 *.spec
 
+# WASM build output (regenerate with ./build_web.sh; the runtime wheel is
+# vendored in web_runtime/ which IS tracked)
+web/
+
 # runtime
 .last_ip
 .DS_Store
+
+# wrangler local cache (account id, not for the repo)
+.wrangler/
+
+# scratch screenshots
+_*.png

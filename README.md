@@ -7,6 +7,13 @@ flickering lights — and have to fix it up into the best grocery in town.
 All the pixel art is **generated procedurally in code** (no image files), so the
 whole game is just Python.
 
+## 🎮 Play instantly in your browser
+
+**▶️ https://grocery-tycoon.pages.dev** — no download, no Python, just click and play.
+
+This is a single-player WebAssembly build hosted on Cloudflare Pages. For
+**co-op multiplayer** with friends, use the downloadable version below.
+
 ## 📨 Send it to friends (one link)
 
 Share this link — it downloads the whole game as a zip:
@@ -200,7 +207,23 @@ Sources that informed the design:
 | `net_test.py` | Headless test that runs a host + client over the loopback |
 | `make_share.sh` | Builds a zip of the game to send to friends |
 | `build_standalone.sh` | Builds a no-Python-needed standalone app (per OS) |
+| `web_main.py` | Async entry point for the browser (WASM) build |
+| `build_web.sh` | Compiles to WebAssembly with pygbag into `web/` |
+| `serve_web.py` | Local preview server for the WASM build |
+| `deploy_web.sh` | Deploys `web/` to Cloudflare Pages |
+| `web_runtime/` | Vendored pygame WASM wheel (keeps web builds reproducible) |
 | `FOR_FRIENDS.md` | Friend-facing "how to join" guide |
+
+### Updating the browser version on Cloudflare
+
+```bash
+npx wrangler login     # one-time, authorize in your browser
+./build_web.sh         # compile to WASM into web/
+./deploy_web.sh        # publish to https://grocery-tycoon.pages.dev
+```
+
+Note: the in-browser build is **single-player only** — browsers can't use the
+game's TCP sockets, so co-op lives in the downloadable desktop version.
 
 Tip: almost everything is tunable in `settings.py` — prices, wages, upgrade
 costs, store hours and the colour palette.

@@ -12,10 +12,14 @@ the books).
 import math
 import os
 import random
-import subprocess
 import sys
 import types
 import pygame
+
+try:
+    import subprocess          # not available in the browser (WASM) build
+except Exception:
+    subprocess = None
 
 import art
 from settings import (
@@ -28,7 +32,14 @@ from settings import (
 from world import World, Shelf
 from entities import Customer, Staff
 from street import Street
-import net
+
+try:
+    import net                 # networking; absent/disabled in the WASM build
+except Exception:
+    net = None
+
+# True when running in a browser via pygbag/WASM (no sockets, no subprocess).
+IS_WEB = (sys.platform == "emscripten")
 
 
 def C(name):
@@ -50,6 +61,8 @@ _LAST_IP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 def copy_clip(text):
     """Best-effort copy to the system clipboard (so the host can paste & share)."""
+    if subprocess is None:
+        return False
     try:
         if sys.platform == "darwin":
             cmd = ["pbcopy"]
@@ -64,6 +77,8 @@ def copy_clip(text):
 
 
 def paste_clip():
+    if subprocess is None:
+        return ""
     try:
         if sys.platform == "darwin":
             cmd = ["pbpaste"]
@@ -175,15 +190,19 @@ class Game:
         # pygame.SCALED renders at the logical size and lets SDL scale it to the
         # display -- essential on macOS Retina, where a plain window otherwise
         # draws into only part of the physical window (the rest stays black).
-        try:
-            self.screen = pygame.display.set_mode(
-                (VIEW_W, VIEW_H), pygame.SCALED, vsync=1)
-        except pygame.error:
+        if IS_WEB:
+            # the browser canvas handles scaling; SCALED/vsync aren't supported
+            self.screen = pygame.display.set_mode((VIEW_W, VIEW_H))
+        else:
             try:
                 self.screen = pygame.display.set_mode(
-                    (VIEW_W, VIEW_H), pygame.SCALED)
+                    (VIEW_W, VIEW_H), pygame.SCALED, vsync=1)
             except pygame.error:
-                self.screen = pygame.display.set_mode((VIEW_W, VIEW_H))
+                try:
+                    self.screen = pygame.display.set_mode(
+                        (VIEW_W, VIEW_H), pygame.SCALED)
+                except pygame.error:
+                    self.screen = pygame.display.set_mode((VIEW_W, VIEW_H))
         self.play = pygame.Surface((PLAYFIELD_W, PLAYFIELD_H))
         self.clock = pygame.time.Clock()
         self.font_s = pygame.font.SysFont("menlo,consolas,monospace", 13)
@@ -1503,15 +1522,27 @@ class Game:
             if self._button((cx - 160, 200, 320, 52), "Single Player",
                             "ui_good", text_color="black"):
                 self.start_single()
-            if self._button((cx - 160, 268, 320, 52), "Host Multiplayer",
-                            "ui_gold", text_color="black"):
-                self.start_host()
-            if self._button((cx - 160, 336, 320, 52), "Join Multiplayer"):
-                self.title_mode = "join"
-                self.status_msg = ""
-            self._text(sc, self.font_s,
-                       "Host = run your own store. Join = help a friend's store.",
-                       cx, 410, "ui_dim", center=True)
+            if IS_WEB:
+                self._text(sc, self.font_m,
+                           "Playing in your browser.", cx, 290, "ui_text",
+                           center=True)
+                self._text(sc, self.font_s,
+                           "Want co-op with friends? Download the full game --",
+                           cx, 326, "ui_dim", center=True)
+                self._text(sc, self.font_s,
+                           "github.com/eleanorjpw/grocery-tycoon",
+                           cx, 346, "ui_accent", center=True)
+            else:
+                if self._button((cx - 160, 268, 320, 52), "Host Multiplayer",
+                                "ui_gold", text_color="black"):
+                    self.start_host()
+                if self._button((cx - 160, 336, 320, 52), "Join Multiplayer"):
+                    self.title_mode = "join"
+                    self.status_msg = ""
+                self._text(sc, self.font_s,
+                           "Host = run your own store. "
+                           "Join = help a friend's store.",
+                           cx, 410, "ui_dim", center=True)
         else:
             self._text(sc, self.font_m, "Enter the host's IP address:",
                        cx, 210, "ui_text", center=True)
