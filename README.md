@@ -7,6 +7,19 @@ flickering lights — and have to fix it up into the best grocery in town.
 All the pixel art is **generated procedurally in code** (no image files), so the
 whole game is just Python.
 
+## 📨 Send it to friends (one link)
+
+Share this link — it downloads the whole game as a zip:
+
+**➡️ https://github.com/eleanorjpw/grocery-tycoon/archive/refs/heads/main.zip**
+
+Or send the repo page so they can read along: **https://github.com/eleanorjpw/grocery-tycoon**
+
+Your friend unzips it, then double-clicks **`Play Grocery Tycoon.command`** (Mac)
+or **`Play Grocery Tycoon.bat`** (Windows) and presses **Join**. First launch
+auto-installs what it needs (they just need [Python 3](https://www.python.org/downloads/)).
+Full step-by-step for them is in [`FOR_FRIENDS.md`](FOR_FRIENDS.md).
+
 ## Run it
 
 **Easiest:** double-click `Play Grocery Tycoon.command` in Finder.

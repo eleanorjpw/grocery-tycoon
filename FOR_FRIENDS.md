@@ -1,8 +1,15 @@
 # 🛒 Grocery Tycoon — How to join your friend's store
 
-You got sent this folder so you can **join a friend's shop** and run it together.
-The game runs on *your* computer and connects to your friend (the "host") over
-the network. Here's the whole process.
+You're going to **join a friend's shop** and run it together. The game runs on
+*your* computer and connects to your friend (the "host") over the network.
+
+## 0. Get the game
+
+If you haven't already, download it here (it's a zip):
+
+**https://github.com/eleanorjpw/grocery-tycoon/archive/refs/heads/main.zip**
+
+Unzip it and open the `grocery-tycoon-main` folder.
 
 ## 1. Run the game on your computer
 
