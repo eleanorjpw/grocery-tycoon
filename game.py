@@ -2200,22 +2200,32 @@ class Game:
 
     def _title_newgame(self, cx):
         sc = self.screen
-        self._text(sc, self.font_l, "Name your store", cx, 190, "ui_gold",
+        self._text(sc, self.font_l, "Name your store", cx, 170, "ui_gold",
                    center=True)
-        box = pygame.Rect(cx - 200, 240, 400, 50)
+        box = pygame.Rect(cx - 200, 214, 400, 50)
         pygame.draw.rect(sc, C("ui_panel2"), box)
         pygame.draw.rect(sc, C("ui_accent"), box, 2)
         self._text(sc, self.font_m, (self.newname_text or "My Store") + "_",
                    box.x + 12, box.y + 14, "white")
-        if self._button((cx - 160, 310, 150, 46), "Create", "ui_good",
+        # per-save Relaxed Mode choice
+        on = self.relaxed
+        if self._button((cx - 200, 282, 400, 40),
+                        f"Relaxed Mode:  {'ON' if on else 'OFF'}",
+                        "ui_good" if on else "ui_panel2",
+                        text_color="black" if on else "ui_text"):
+            self.relaxed = not self.relaxed
+        self._text(sc, self.font_s,
+                   "Relaxed = slower days, gentle events, no game-over.",
+                   cx, 328, "ui_dim", center=True)
+        if self._button((cx - 160, 356, 150, 46), "Create", "ui_good",
                         text_color="black"):
             self.current_save = self.newname_text.strip() or "My Store"
             self.start_single()
-        if self._button((cx + 10, 310, 150, 46), "Back"):
+        if self._button((cx + 10, 356, 150, 46), "Back"):
             self.title_mode = "saves"
         self._text(sc, self.font_s,
                    "This is your save slot. Save anytime from the pause menu (P).",
-                   cx, 372, "ui_dim", center=True)
+                   cx, 414, "ui_dim", center=True)
 
     def _draw_lobby(self):
         self._draw_world_scaled()
