@@ -534,29 +534,37 @@ class Game:
                    "or face a crate to order.", "ui_dim")
 
     def _street_interact(self, player):
-        ft = player.front_tile()
-        st = self.street
-        if ft == st.store_door:
+        # forgiving: interact with whichever building the player is standing
+        # in front of (anywhere in its column range), no need to hit the exact
+        # door tile or face a precise direction.
+        pc = player.tile()[0]
+        target = None
+        for b in self.street.buildings():
+            c0 = b[0]
+            if c0 <= pc <= c0 + BLOCK_W - 1:
+                target = b
+                break
+        if target is None:
+            self.toast("Walk up to a shop and press E.", "ui_dim")
+            return
+        c0, color, theme, shop, is_store = target
+        if is_store:
             player.scene = "store"
             player.x, player.y = 9 * TILE, 11 * TILE
             player.facing, player.idx, player.idy = "up", 0, 0
             if player is self.me:
-                self.toast("Back to work!", "ui_dim")
+                self.toast("Back inside the store!", "ui_good")
             return
-        for shop in st.shops:
-            if ft == shop.door:
-                if shop.owned:
-                    self.toast(f"You already own the {shop.name}.", "ui_dim")
-                elif self.money >= shop.price:
-                    self.money -= shop.price
-                    shop.owned = True
-                    self.toast(f"Bought the {shop.name}! "
-                               f"+{money_str(shop.income)}/day income.", "ui_good")
-                else:
-                    self.toast(f"The {shop.name} costs {money_str(shop.price)} "
-                               f"-- not enough cash.", "ui_bad")
-                return
-        self.toast("Walk up to a shop's door and press E to buy it.", "ui_dim")
+        if shop.owned:
+            self.toast(f"You already own the {shop.name}.", "ui_dim")
+        elif self.money >= shop.price:
+            self.money -= shop.price
+            shop.owned = True
+            self.toast(f"Bought the {shop.name}! "
+                       f"+{money_str(shop.income)}/day income.", "ui_good")
+        else:
+            self.toast(f"The {shop.name} costs {money_str(shop.price)} "
+                       f"-- not enough cash.", "ui_bad")
 
     def _restock_shelf(self, sh, player):
         avail = self.backstock.get(sh.product, 0)
