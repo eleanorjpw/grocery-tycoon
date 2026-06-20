@@ -314,8 +314,8 @@ class Game:
         self.cafe_guests = []
         self.cafe_supplies = CAFE_START_SUPPLIES
         self.cafe_carry = None       # None | food key | "check"
-        self.cafe_cooking = []       # [[food_key, time_left], ...]
-        self.cafe_ready = []         # [food_key, ...] waiting on the pass
+        # one stove per dish: state is "idle" | "cooking" | "ready"
+        self.cafe_stove = {f: {"st": "idle", "t": 0.0} for f in CAFE_FOODS}
         self.cafe_upgrades = set()
         self.cafe_spawn_timer = 3.0
         self.paused = False
@@ -614,14 +614,35 @@ class Game:
                 self.cafe_guests.append(g)
 
     def _cafe_cook_tick(self, dt):
-        done = []
-        for c in self.cafe_cooking:
-            c[1] -= dt
-            if c[1] <= 0:
-                self.cafe_ready.append(c[0])
-                done.append(c)
-        for c in done:
-            self.cafe_cooking.remove(c)
+        for st in self.cafe_stove.values():
+            if st["st"] == "cooking":
+                st["t"] -= dt
+                if st["t"] <= 0:
+                    st["st"], st["t"] = "ready", 0.0
+
+    def _cafe_use_stove(self, food):
+        """Click/press a stove: start cooking, or pick up its ready dish."""
+        st = self.cafe_stove[food]
+        if st["st"] == "ready":
+            if self.cafe_carry is not None:
+                self.toast("Your hands are full -- deliver that first.", "ui_dim")
+                return
+            st["st"], st["t"] = "idle", 0.0
+            self.cafe_carry = food
+            self.toast(f"Picked up the {CAFE_FOODS[food]['name']}.", "ui_good")
+        elif st["st"] == "cooking":
+            self.toast(f"{CAFE_FOODS[food]['name']} is still cooking...", "ui_dim")
+        else:                                   # idle -> start cooking
+            if self.cafe_supplies <= 0:
+                self.toast("Out of supplies! Buy more (crate or TAB menu).",
+                           "ui_bad")
+                return
+            self.cafe_supplies -= 1
+            prep = CAFE_FOODS[food]["prep"]
+            if "kitchen" in self.cafe_upgrades:
+                prep *= 0.6
+            st["st"], st["t"], st["full"] = "cooking", prep, prep
+            self.toast(f"Cooking {CAFE_FOODS[food]['name']}...", "ui_accent")
 
     def on_cafe_rage(self, guest):
         self.reputation = max(0, self.reputation - 1)
@@ -663,24 +684,14 @@ class Game:
         self.popup(guest.w.x, guest.w.y - 4, "coin", money_str(pay))
         guest._leave(self)
 
-    def _cafe_fire_order(self):
-        """Start cooking the longest-waiting un-fired order."""
-        waiting = [g for g in self.cafe_guests
-                   if g.state == "ordered" and not g.fired]
-        if not waiting:
-            self.toast("No orders to cook right now.", "ui_dim")
-            return
-        if self.cafe_supplies <= 0:
-            self.toast("Out of supplies! Buy more (crate or TAB menu).", "ui_bad")
-            return
-        g = min(waiting, key=lambda q: q.patience)   # most impatient first
-        g.fired = True
-        self.cafe_supplies -= 1
-        prep = CAFE_FOODS[g.order]["prep"]
-        if "kitchen" in self.cafe_upgrades:
-            prep *= 0.6
-        self.cafe_cooking.append([g.order, prep])
-        self.toast(f"Cooking {CAFE_FOODS[g.order]['name']}...", "ui_accent")
+    def cafe_click(self, pos):
+        """Mouse-click a stove (anywhere) to cook that dish / grab it when ready."""
+        c, r = pos[0] // RT, pos[1] // RT
+        food = self.cafe.stove_by_tile.get((c, r))
+        if food:
+            self._cafe_use_stove(food)
+            return True
+        return False
 
     def _cafe_interact(self, player):
         cafe = self.cafe
@@ -705,26 +716,18 @@ class Game:
             else:
                 self.toast("No one's asked for a check yet.", "ui_dim")
             return
-        # kitchen: pick up a ready dish, else fire the next order
-        if any(near(k) for k in cafe.kitchen):
-            if self.cafe_carry == "check":
-                self.toast("You're holding a check, not cooking.", "ui_dim")
-            elif self.cafe_carry:
-                self.toast("Deliver the dish you're holding first.", "ui_dim")
-            elif self.cafe_ready:
-                self.cafe_carry = self.cafe_ready.pop(0)
-                self.toast(f"Picked up {CAFE_FOODS[self.cafe_carry]['name']}.",
-                           "ui_good")
-            else:
-                self._cafe_fire_order()
-            return
+        # stoves: cook the dish you're standing next to / grab it when ready
+        for s in cafe.stoves:
+            if near(s["tile"]):
+                self._cafe_use_stove(s["food"])
+                return
         # a seated guest
         for g in self.cafe_guests:
             if g.seat and near(g.seat):
                 self._serve_guest(g)
                 return
-        self.toast("Kitchen=cook/serve up, register(top-right)=checks, "
-                   "crate=supplies, TAB=cafe menu.", "ui_dim")
+        self.toast("Click a stove to cook that dish, deliver it, then bring the "
+                   "check from the register.", "ui_dim")
 
     def _serve_guest(self, g):
         if g.state == "ordered":
@@ -1135,8 +1138,8 @@ class Game:
                     t["guest"] = None
                 self.cafe_guests = []
                 self.cafe_carry = None
-                self.cafe_cooking = []
-                self.cafe_ready = []
+                for st in self.cafe_stove.values():
+                    st["st"], st["t"] = "idle", 0.0
                 self.cafe_spawn_timer = 3.0
 
     def update(self, dt):
@@ -1648,15 +1651,20 @@ class Game:
                     elif t == "door":
                         bg.blit(self.sprites["door"], xy)
                     elif t == "counter":
-                        bg.blit(self.sprites["counter"], xy)
+                        if (c, r) in cf.stove_by_tile:
+                            bg.blit(self.sprites["stove"], xy)
+                        else:
+                            bg.blit(self.sprites["counter"], xy)
                     elif t == "table":
                         bg.blit(self.sprites["cafe_table"], xy)
                     else:
                         bg.blit(self.sprites["floor_new"], xy)
-            bg.blit(self.sprites["coffee_machine"], (6 * RT, 2 * RT))
-            bg.blit(self.sprites["coffee_machine"], (11 * RT, 2 * RT))
             bg.blit(self.sprites["register"],
                     (cf.register[0] * RT, cf.register[1] * RT))
+            # dish label above each stove so you know which makes what
+            for st in cf.stoves:
+                c, r = st["tile"]
+                bg.blit(self.food_icons[st["food"]], (c * RT, (r - 1) * RT))
             self._caf_bg, self._caf_key = bg, key
         return self._caf_bg
 
@@ -1670,15 +1678,19 @@ class Game:
     def _draw_cafe(self):
         s = self.play
         s.blit(self._cafe_bg(), (0, 0))
-        # dishes ready on the pass (full) + cooking (faded), along the counter
-        slots = self.cafe.kitchen[1:]      # skip the corner under a machine
-        for i, food in enumerate(self.cafe_ready[:len(slots)]):
-            c, r = slots[i]
-            s.blit(self.food_icons[food], (c * RT, r * RT - 4))
-        for j, (food, _t) in enumerate(self.cafe_cooking[:4]):
-            ic = self.food_icons[food].copy()
-            ic.set_alpha(110)
-            s.blit(ic, ((13 + j) % GRID_W * RT, 2 * RT - 4))
+        # per-stove state: a ready dish, or a cooking progress bar
+        for st in self.cafe.stoves:
+            c, r = st["tile"]
+            x, y = c * RT, r * RT
+            state = self.cafe_stove[st["food"]]
+            if state["st"] == "ready":
+                s.blit(self.food_icons[st["food"]], (x, y))
+            elif state["st"] == "cooking":
+                full = state.get("full", 1) or 1
+                frac = max(0.0, min(1.0, 1 - state["t"] / full))
+                pygame.draw.rect(s, C("dark"), (x + 6, y + RT - 12, RT - 12, 7))
+                pygame.draw.rect(s, C("ui_good"),
+                                 (x + 6, y + RT - 12, int((RT - 12) * frac), 7))
         draws = []
         for g in self.cafe_guests:
             spr = self.cust_spr[g.skin][g.w.facing]
@@ -2562,6 +2574,10 @@ class Game:
                 return False
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 self.click_pos = e.pos
+                if (self.phase == PHASE_PLAY and self.mode != "client"
+                        and self._local_scene() == "cafe"
+                        and not self.menu_open and not self.paused):
+                    self.cafe_click(e.pos)
             if e.type == pygame.KEYDOWN:
                 if not self._handle_key(e):
                     return False

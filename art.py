@@ -398,6 +398,19 @@ def cafe_table():
     return s
 
 
+def stove():
+    s = _surf()
+    px(s, "metal_dk", 0, 2, T, T - 2)
+    px(s, "metal", 1, 3, T - 2, T - 4)
+    px(s, "metal_lt", 1, 3, T - 2, 1)
+    for bx in (2, 9):                 # two burners
+        px(s, "black", bx, 5, 5, 5)
+        px(s, "red", bx + 1, 6, 3, 3)
+        px(s, "yellow", bx + 2, 7, 1, 1)
+    px(s, "metal_dk", 1, 12, T - 2, 2)
+    return s
+
+
 def coffee_machine():
     s = _surf()
     px(s, "metal_dk", 3, 2, 10, 12)
@@ -546,6 +559,7 @@ def build_sprites():
         "sparkle":      sparkle(),
         "cafe_table":   cafe_table(),
         "coffee_machine": coffee_machine(),
+        "stove":        stove(),
         "food":         food_icon(),
         "check":        check_icon(),
     }

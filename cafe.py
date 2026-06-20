@@ -17,6 +17,7 @@ BASE_TABLES = [(3, 4), (7, 4), (11, 4), (15, 4),
                (3, 7), (7, 7), (11, 7), (15, 7)]
 PATIO_TABLES = [(3, 10), (7, 10), (11, 10), (15, 10)]
 FOOD_KEYS = list(CAFE_FOODS.keys())
+STOVE_COLS = [4, 6, 8, 10, 12, 14]      # one stove per dish along the top
 
 
 class Cafe:
@@ -29,12 +30,14 @@ class Cafe:
         for c in (9, 10):
             self.grid[GRID_H - 1][c] = DOOR
         self.door_tiles = {(9, GRID_H - 1), (10, GRID_H - 1)}
-        # kitchen pass counter
-        self.kitchen = []
-        for c in range(5, 13):
+        # one labelled stove per dish -- click (or E) a stove to make that dish
+        self.stoves = []
+        for food, c in zip(FOOD_KEYS, STOVE_COLS):
             self.grid[2][c] = COUNTER
-            self.kitchen.append((c, 2))
-        # register (where you grab a guest's check) + supply crate
+            self.stoves.append({"food": food, "tile": (c, 2)})
+        self.kitchen = [s["tile"] for s in self.stoves]
+        self.stove_by_tile = {s["tile"]: s["food"] for s in self.stoves}
+        # register (grab a guest's check here) + supply crate
         self.register = (17, 2)
         self.grid[2][17] = COUNTER
         self.supply = (2, 2)
