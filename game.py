@@ -76,6 +76,8 @@ def money_str(v):
     return f"-{s}" if v < 0 else s
 
 
+RT = TILE * SCALE        # render tile size in screen px (sprites are RTxRT)
+
 PLAYER_SHIRTS = ["shirt_red", "shirt_blue", "shirt_grn", "purple",
                  "orange", "shirt_ylw"]
 SPAWN_TILES = [(9, 11), (8, 11), (10, 11), (7, 11), (11, 11), (6, 11), (12, 11)]
@@ -228,7 +230,7 @@ class Game:
                         (VIEW_W, VIEW_H), pygame.SCALED)
                 except pygame.error:
                     self.screen = pygame.display.set_mode((VIEW_W, VIEW_H))
-        self.play = pygame.Surface((PLAYFIELD_W, PLAYFIELD_H))
+        self.play = pygame.Surface((PLAYFIELD_W * SCALE, PLAYFIELD_H * SCALE))
         self.clock = pygame.time.Clock()
         self.font_s = pygame.font.SysFont("menlo,consolas,monospace", 13)
         self.font_m = pygame.font.SysFont("menlo,consolas,monospace", 17)
@@ -242,6 +244,8 @@ class Game:
         self.front_sprs = {c: art.storefront(c)
                            for c in {s[4] for s in _SHOPS} | {"ui_gold"}}
         self._shelf_cache = {}
+        self._bg_cache = self._bg_key = None      # cached static store floor/walls
+        self._st_bg = self._st_key = None         # cached static street tiles
         self._build_people_sprites()
 
         # networking / mode
@@ -1304,48 +1308,59 @@ class Game:
         lvl = 0 if total <= 0 else (1 if total < 60 else (2 if total < 160 else 3))
         return self.sprites[f"crate{lvl}"]
 
+    def _world_bg(self):
+        """Cached static floor/walls/door (rebuilt only on floor upgrade/reset)."""
+        w = self.world
+        key = ("floor" in self.upgrades, id(w))
+        if self._bg_cache is None or self._bg_key != key:
+            bg = pygame.Surface((PLAYFIELD_W * SCALE, PLAYFIELD_H * SCALE))
+            bg.fill(C("black"))
+            for r in range(GRID_H):
+                for c in range(GRID_W):
+                    t = w.grid[r][c]
+                    if t == "wall":
+                        bg.blit(self.sprites["wall"], (c*RT, r*RT))
+                    elif t == "door":
+                        bg.blit(self.sprites["door"], (c*RT, r*RT))
+                    else:
+                        bg.blit(self._floor_sprite(c, r), (c*RT, r*RT))
+            self._bg_cache, self._bg_key = bg, key
+        return self._bg_cache
+
     def _draw_world(self):
         s = self.play
         w = self.world
-        s.fill(C("black"))
-        for r in range(GRID_H):
-            for c in range(GRID_W):
-                t = w.grid[r][c]
-                if t == "wall":
-                    s.blit(self.sprites["wall"], (c*TILE, r*TILE))
-                elif t == "door":
-                    s.blit(self.sprites["door"], (c*TILE, r*TILE))
-                else:
-                    s.blit(self._floor_sprite(c, r), (c*TILE, r*TILE))
+        s.blit(self._world_bg(), (0, 0))
         for (c, r) in w.dirty:
-            s.blit(self.sprites["dirt"], (c*TILE, r*TILE))
+            s.blit(self.sprites["dirt"], (c*RT, r*RT))
         crate = self._crate_sprite()
         for (c, r) in w.crates:
-            s.blit(crate, (c*TILE, r*TILE))
+            s.blit(crate, (c*RT, r*RT))
         for (c, r) in w.plants:
-            s.blit(self.sprites["plant"], (c*TILE, r*TILE))
+            s.blit(self.sprites["plant"], (c*RT, r*RT))
 
         draws = []
         for sh in w.shelves:
             draws.append((sh.row*TILE + 15, self._shelf_sprite(sh),
-                          sh.col*TILE, sh.row*TILE))
+                          sh.col*RT, sh.row*RT))
         for ch in w.checkouts:
             draws.append((ch.row*TILE + 14, self.sprites["counter"],
-                          ch.col*TILE, ch.row*TILE))
+                          ch.col*RT, ch.row*RT))
             draws.append((ch.row*TILE + 15, self.sprites["register"],
-                          ch.col*TILE, ch.row*TILE))
+                          ch.col*RT, ch.row*RT))
         for cust in self.customers:
             spr = self.cust_spr[cust.skin_idx][cust.w.facing]
             ox, oy = cust.w.offset
-            draws.append((cust.w.y + 15 + oy, spr, cust.w.x + ox, cust.w.y + oy))
+            draws.append((cust.w.y + 15 + oy, spr,
+                          (cust.w.x + ox) * SCALE, (cust.w.y + oy) * SCALE))
         for st in self.staff:
             draws.append((st.w.y + 15, self.staff_spr[st.role][st.w.facing],
-                          st.w.x, st.w.y))
+                          st.w.x * SCALE, st.w.y * SCALE))
         for p in self.players.values():
             if p.scene != "store":
                 continue
             spr = self.player_sprs[p.color_idx % len(self.player_sprs)][p.facing]
-            draws.append((p.y + 15, spr, p.x, p.y))
+            draws.append((p.y + 15, spr, p.x * SCALE, p.y * SCALE))
         draws.sort(key=lambda d: d[0])
         for _, surf, x, y in draws:
             s.blit(surf, (int(x), int(y)))
@@ -1356,26 +1371,26 @@ class Game:
                 continue
             ic = self.icons.get(sh.product)
             if ic:
-                s.blit(ic, (sh.col * TILE, sh.row * TILE - 7))
+                s.blit(ic, (sh.col * RT, sh.row * RT - 16))
 
         for p in self.popups:
             if p["kind"] == "coin":
-                s.blit(self.sprites["coin"], (int(p["x"]), int(p["y"])))
+                s.blit(self.sprites["coin"],
+                       (int(p["x"] * SCALE), int(p["y"] * SCALE)))
             elif p["kind"] == "spark":
-                s.blit(self.sprites["sparkle"], (int(p["x"]), int(p["y"])))
+                s.blit(self.sprites["sparkle"],
+                       (int(p["x"] * SCALE), int(p["y"] * SCALE)))
 
         dim = 150 if self.power_out else (80 if "lights" not in self.upgrades else 0)
         if dim:
-            ov = pygame.Surface((PLAYFIELD_W, PLAYFIELD_H))
+            ov = pygame.Surface((PLAYFIELD_W * SCALE, PLAYFIELD_H * SCALE))
             ov.fill((10, 8, 24))
             ov.set_alpha(dim)
             s.blit(ov, (0, 0))
 
     def _draw_world_scaled(self):
         self._draw_world()
-        self.screen.blit(
-            pygame.transform.scale(self.play, (VIEW_W, PLAYFIELD_H * SCALE)),
-            (0, 0))
+        self.screen.blit(self.play, (0, 0))
 
     def _local_scene(self):
         return self.me.scene if self.me else "store"
@@ -1386,41 +1401,46 @@ class Game:
             self._draw_street()
         else:
             self._draw_world()
-        self.screen.blit(
-            pygame.transform.scale(self.play, (VIEW_W, PLAYFIELD_H * SCALE)),
-            (0, 0))
+        self.screen.blit(self.play, (0, 0))
+
+    def _street_bg(self):
+        st = self.street
+        key = id(st)
+        if self._st_bg is None or self._st_key != key:
+            bg = pygame.Surface((PLAYFIELD_W * SCALE, PLAYFIELD_H * SCALE))
+            bg.fill(C("black"))
+            shop_cols = {sh.col: sh for sh in st.shops}
+            for r in range(GRID_H):
+                for c in range(GRID_W):
+                    t = st.grid[r][c]
+                    xy = (c * RT, r * RT)
+                    if t == "wall":
+                        if r == 3 and c in shop_cols:
+                            bg.blit(self.front_sprs.get(shop_cols[c].color,
+                                    self.sprites["storefront"]), xy)
+                        elif r == 3 and c == st.store_col:
+                            bg.blit(self.front_sprs["ui_gold"], xy)
+                        else:
+                            bg.blit(self.sprites["storefront" if r >= 2
+                                    else "wall"], xy)
+                    elif t == "door":
+                        bg.blit(self.sprites["door"], xy)
+                    elif t == "road":
+                        dash = (c % 4 == 1 and r == 10)
+                        bg.blit(self.sprites["road_dash" if dash else "road"], xy)
+                    else:
+                        bg.blit(self.sprites["sidewalk"], xy)
+            self._st_bg, self._st_key = bg, key
+        return self._st_bg
 
     def _draw_street(self):
         s = self.play
-        st = self.street
-        s.fill(C("black"))
-        shop_cols = {sh.col: sh for sh in st.shops}
-        for r in range(GRID_H):
-            for c in range(GRID_W):
-                t = st.grid[r][c]
-                xy = (c * TILE, r * TILE)
-                if t == "wall":
-                    # storefront band sits on the row just above the doors
-                    if r == 3 and c in shop_cols:
-                        s.blit(self.front_sprs.get(shop_cols[c].color,
-                               self.sprites["storefront"]), xy)
-                    elif r == 3 and c == st.store_col:
-                        s.blit(self.front_sprs["ui_gold"], xy)
-                    else:
-                        s.blit(self.sprites["storefront" if r >= 2
-                               else "wall"], xy)
-                elif t == "door":
-                    s.blit(self.sprites["door"], xy)
-                elif t == "road":
-                    dash = (c % 4 == 1 and r == 10)
-                    s.blit(self.sprites["road_dash" if dash else "road"], xy)
-                else:
-                    s.blit(self.sprites["sidewalk"], xy)
+        s.blit(self._street_bg(), (0, 0))
         # players on the street, y-sorted
         ppl = [p for p in self.players.values() if p.scene == "street"]
         for p in sorted(ppl, key=lambda q: q.y):
             spr = self.player_sprs[p.color_idx % len(self.player_sprs)][p.facing]
-            s.blit(spr, (int(p.x), int(p.y)))
+            s.blit(spr, (int(p.x * SCALE), int(p.y * SCALE)))
 
     def _draw_street_signs(self):
         """Shop names + prices, drawn in screen space over the storefronts."""
@@ -1494,38 +1514,39 @@ class Game:
             self._text(sc, self.font_s, "CLOSED", 312, y + 28, "ui_bad")
         self._bar(sc, 360, y + 2, "Reputation", self.reputation, "ui_good")
         self._bar(sc, 360, y + 26, "Cleanliness", self.cleanliness, "glass")
-        sx = 640
+        sx = 624
         roles = " ".join(f"{STAFF_TYPES[r]['name'][:4]}:{self.staff_count(r)}"
                          for r in STAFF_TYPES)
         self._text(sc, self.font_s, roles, sx, y, "ui_dim")
         self._text(sc, self.font_s,
                    f"Stockroom units: {sum(self.backstock.values())}",
                    sx, y + 18, "ui_dim")
-        self._text(sc, self.font_s, "[TAB] Manage  [SPACE/E] Interact  "
-                   "[WASD] Move", sx, y + 36, "ui_dim")
+        self._text(sc, self.font_s,
+                   "WASD move - E interact - TAB manage - O open/close - P pause",
+                   16, y + 84, "ui_dim")
+        ind = None
         if self.power_out:
-            self._text(sc, self.font_m, "POWER OUT", VIEW_W - 16, y + 24,
-                       "ui_bad", right=True)
+            ind = ("POWER OUT", "ui_bad")
+        elif not self.shop_open:
+            ind = ("CLOSED", "ui_bad")
         elif self.mode != "local":
-            self._text(sc, self.font_m,
-                       f"{'HOST' if self.mode == 'host' else 'CO-OP'}: "
-                       f"{len(self.players)}P", VIEW_W - 16, y + 24,
-                       "ui_accent", right=True)
+            ind = (f"{'HOST' if self.mode == 'host' else 'CO-OP'}: "
+                   f"{len(self.players)}P", "ui_accent")
         elif self.relaxed:
-            self._text(sc, self.font_m, "RELAXED", VIEW_W - 16, y + 24,
-                       "ui_good", right=True)
+            ind = ("RELAXED", "ui_good")
+        if ind:
+            self._text(sc, self.font_m, ind[0], sx, y + 40, ind[1])
         # open/close shop button (works for everyone; routed through the host)
         if not self.menu_open:
-            if self._button((VIEW_W - 246, top + 6, 110, 26),
-                            "Open Shop [O]" if not self.shop_open
-                            else "Close Shop [O]",
+            if self._button((VIEW_W - 126, top + 8, 112, 26),
+                            "Open Shop" if not self.shop_open else "Close Shop",
                             "ui_good" if not self.shop_open else "ui_panel2",
                             text_color="black" if not self.shop_open else "ui_text"):
                 self.toggle_shop()
         # pause button (host/single-player only; co-op clients can't pause)
         if self.mode != "client" and not self.menu_open:
-            if self._button((VIEW_W - 128, top + 6, 110, 26),
-                            "Resume [P]" if self.paused else "Pause [P]",
+            if self._button((VIEW_W - 126, top + 40, 112, 26),
+                            "Resume" if self.paused else "Pause",
                             "ui_gold" if self.paused else "ui_panel2",
                             text_color="black" if self.paused else "ui_text"):
                 self.paused = not self.paused

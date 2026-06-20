@@ -1,276 +1,316 @@
 """
-Procedural 32-bit-style pixel art. No external image files needed -- every
-sprite is drawn into a 16x16 surface at load time, then scaled up by the view.
+Procedural pixel art, rendered at 3x detail (48px tiles) with light-from-top-left
+shading -- a higher-fidelity, less-blocky look than the old 16px sprites.
+
+Game logic still works in 16px tile units; the renderer scales positions by
+SCALE, and every sprite here is authored at T = TILE * SCALE (= 48) pixels so it
+blits 1:1 at the window's native resolution.
 """
 import pygame
-from settings import PAL, TILE
+from settings import PAL, TILE, SCALE
 
-T = TILE
+T = TILE * SCALE          # sprite size in screen pixels (48)
+U = SCALE                 # one "art unit" = SCALE screen px (keeps proportions)
+
+
+def _c(c):
+    return PAL[c] if isinstance(c, str) else c
 
 
 def _surf():
-    s = pygame.Surface((T, T), pygame.SRCALPHA)
-    return s
+    return pygame.Surface((T, T), pygame.SRCALPHA)
 
 
 def px(s, c, x, y, w=1, h=1):
-    """Fill a block of pixels with a palette colour."""
-    if isinstance(c, str):
-        c = PAL[c]
-    pygame.draw.rect(s, c, (x, y, w, h))
+    pygame.draw.rect(s, _c(c), (x, y, w, h))
 
 
-def _noise(s, color, spots):
-    """Scatter a few darker/lighter pixels for texture (deterministic)."""
-    if isinstance(color, str):
-        color = PAL[color]
-    for (x, y) in spots:
-        px(s, color, x, y)
+def shade(c, d):
+    """Lighten (d>0) or darken (d<0) a palette colour."""
+    r, g, b = _c(c)[:3]
+    return (max(0, min(255, r + d)), max(0, min(255, g + d)),
+            max(0, min(255, b + d)))
 
 
-# --------------------------------------------------------------- tiles --------
+def outline(s, c="black"):
+    """Draw a 1px dark outline around opaque pixels (cheap silhouette pop)."""
+    col = _c(c)
+    mask = pygame.mask.from_surface(s)
+    out = mask.outline()
+    if len(out) > 1:
+        pygame.draw.lines(s, col, True, out, 1)
+
+
+# ============================================================ floor / walls ==
 def floor_tile(new=False, crack=False, dirty=0):
     s = _surf()
-    a, b = ("floor_new1", "floor_new2") if new else ("floor1", "floor2")
-    px(s, a, 0, 0, T, T)
-    # subtle checker / grout lines
-    for y in range(0, T, 8):
-        for x in range(0, T, 8):
-            if (x // 8 + y // 8) % 2 == 0:
-                px(s, b, x, y, 8, 8)
-    px(s, "grout", 0, 0, T, 1)
-    px(s, "grout", 0, 0, 1, T)
+    a = "floor_new1" if new else "floor1"
+    b = "floor_new2" if new else "floor2"
+    s.fill(_c(a))
+    # big checker tiles with a soft inner shadow + highlight bevel
+    half = T // 2
+    for (cx, cy) in ((0, 0), (half, half)):
+        px(s, b, cx, cy, half, half)
+    # grout lines
+    px(s, shade(a, -26), 0, 0, T, U)
+    px(s, shade(a, -26), 0, 0, U, T)
+    px(s, shade(a, -16), 0, half, T, 1)
+    px(s, shade(a, -16), half, 0, 1, T)
+    # subtle highlight just under the top grout
+    px(s, shade(a, 14), U, U, T - U, 1)
     if crack and not new:
-        # a thin crack across the tile
-        for (x, y) in [(4, 2), (5, 3), (5, 4), (6, 5), (6, 6), (7, 7),
-                       (8, 8), (8, 9), (9, 10), (10, 11)]:
-            px(s, "floor_crack", x, y)
-    if dirty:
-        _dirty_overlay(s, dirty)
+        cc = shade("floor_crack", -10)
+        pts = [(14, 6), (16, 10), (15, 15), (19, 19), (18, 24),
+               (22, 28), (21, 33), (26, 38), (30, 42)]
+        for i in range(len(pts) - 1):
+            pygame.draw.line(s, _c(cc), pts[i], pts[i + 1], 1)
+        pygame.draw.line(s, _c("floor_crack"),
+                         (22, 28), (32, 26), 1)
     return s
-
-
-def _dirty_overlay(s, level):
-    spots = [(2, 11), (3, 12), (4, 11), (11, 3), (12, 4), (13, 3),
-             (10, 12), (12, 13), (3, 4), (13, 11), (7, 8), (8, 6)]
-    n = min(len(spots), 4 + level * 3)
-    for i in range(n):
-        x, y = spots[i % len(spots)]
-        x = (x + i * 3) % T
-        y = (y + i * 5) % T
-        px(s, "dirt", x, y, 2, 2)
-        px(s, "dirt2", x, y)
 
 
 def wall_tile():
     s = _surf()
-    px(s, "wall", 0, 0, T, T)
-    # brick rows
-    for y in range(0, T, 4):
-        px(s, "wall_dk", 0, y, T, 1)
-        off = 0 if (y // 4) % 2 == 0 else 4
-        for x in range(off, T, 8):
-            px(s, "wall_dk", x, y, 1, 4)
-    px(s, "wall_lt", 0, 0, T, 1)
+    s.fill(_c("wall"))
+    bh = T // 4                       # brick row height (12)
+    for row in range(4):
+        y = row * bh
+        px(s, "wall_dk", 0, y, T, U)              # mortar line
+        off = 0 if row % 2 == 0 else T // 2
+        x = off
+        while x < T:
+            px(s, "wall_dk", x, y, U, bh)         # vertical mortar
+            # brick face shading
+            px(s, shade("wall", 16), x + U, y + U, T // 2 - U - 1, 2)
+            px(s, shade("wall", -18), x + U, y + bh - 2, T // 2 - U - 1, 2)
+            x += T // 2
+    px(s, "wall_lt", 0, 0, T, U)                  # top catch-light
     return s
 
 
 def door_tile():
     s = _surf()
-    px(s, "floor1", 0, 0, T, T)
-    px(s, "wood_dk", 1, 0, T - 2, 2)
+    s.fill(_c("floor1"))
+    px(s, "wood_dk", 0, 0, T, 6)
+    px(s, "wood", 0, 0, T, 3)
     # welcome mat
-    px(s, "green_dk", 2, 11, 12, 4)
-    px(s, "green", 3, 12, 10, 2)
-    return s
-
-
-# --------------------------------------------------------------- fixtures -----
-def shelf(category_color="orange", level=3, broken=False):
-    """A grocery shelf seen from above-ish. level 0..3 = how full."""
-    s = _surf()
-    if broken:
-        px(s, "wood_dk", 0, 1, T, T - 2)
-        px(s, "shadow", 1, 2, T - 2, T - 4)
-        # toppled / cracked boards
-        px(s, "wood", 1, 3, T - 2, 2)
-        px(s, "wood", 2, 9, T - 3, 2)
-        for (x, y) in [(3, 6), (7, 7), (10, 5), (12, 10), (5, 11)]:
-            px(s, "black", x, y, 2, 1)
-        return s
-    # shelf body
-    px(s, "wood_dk", 0, 0, T, T)
-    px(s, "wood", 1, 1, T - 2, T - 2)
-    px(s, "wood_lt", 1, 1, T - 2, 1)
-    # two product rows
-    if level > 0:
-        rows = [(2, 3), (2, 9)]
-        per = max(1, level)
-        for (rx, ry) in rows:
-            for i in range(per):
-                bx = rx + i * 3
-                if bx > T - 3:
-                    break
-                px(s, category_color, bx, ry, 2, 4)
-                px(s, "white", bx, ry, 2, 1)
-    else:
-        # empty: just dark shelf interior
-        px(s, "wood_dk", 2, 3, T - 4, 4)
-        px(s, "wood_dk", 2, 9, T - 4, 4)
-    return s
-
-
-def fridge(category_color="white", level=3):
-    s = _surf()
-    px(s, "metal_dk", 0, 0, T, T)
-    px(s, "metal", 1, 1, T - 2, T - 2)
-    # glass door
-    px(s, "glass", 2, 2, T - 4, T - 4)
-    px(s, "metal_lt", 2, 2, T - 4, 1)
-    if level > 0:
-        for i in range(max(1, level)):
-            bx = 3 + i * 3
-            if bx > T - 4:
-                break
-            px(s, category_color, bx, 4, 2, 3)
-            px(s, category_color, bx, 9, 2, 3)
-    # frosty highlight
-    px(s, "white", 3, 3, 1, T - 6)
-    return s
-
-
-def counter():
-    s = _surf()
-    px(s, "wood_dk", 0, 0, T, T)
-    px(s, "wood", 0, 0, T, 12)
-    px(s, "wood_lt", 0, 0, T, 1)
-    px(s, "metal_dk", 0, 12, T, 4)
-    return s
-
-
-def register():
-    s = _surf()
-    px(s, "wood", 0, 0, T, T)
-    px(s, "wood_lt", 0, 0, T, 1)
-    # the register body
-    px(s, "metal_dk", 3, 3, 10, 9)
-    px(s, "metal", 4, 4, 8, 5)
-    px(s, "glass", 5, 5, 6, 3)       # screen
-    px(s, "metal_lt", 4, 10, 8, 2)   # keypad
-    px(s, "green", 11, 4, 1, 1)
-    return s
-
-
-def crate(category_color="brown", level=3):
-    """A stockroom crate. level 0..3 = how much stock it's holding."""
-    s = _surf()
-    # contents poking out the top (more = fuller)
-    if level >= 1:
-        px(s, category_color, 3, 1, 3, 3)
-        px(s, "white", 3, 1, 1, 1)
-    if level >= 2:
-        px(s, category_color, 8, 1, 3, 3)
-    if level >= 3:
-        px(s, "orange", 6, 0, 2, 3)
-    # wooden box
-    px(s, "wood_dk", 1, 2, T - 2, T - 3)
-    px(s, "wood", 2, 3, T - 4, T - 5)
-    px(s, "wood_lt", 2, 3, T - 4, 1)
-    # slats
-    px(s, "wood_dk", 2, 8, T - 4, 1)
-    px(s, "wood_dk", 2, 12, T - 4, 1)
-    if level == 0:
-        # empty: darker interior showing through
-        px(s, "shadow", 3, 4, T - 6, 3)
+    pygame.draw.rect(s, _c("green_dk"), (8, T - 16, T - 16, 12), border_radius=3)
+    pygame.draw.rect(s, _c("green"), (11, T - 13, T - 22, 6), border_radius=2)
+    px(s, shade("green", 30), 13, T - 12, T - 26, 1)
     return s
 
 
 def sidewalk_tile():
     s = _surf()
-    px(s, "metal", 0, 0, T, T)
-    px(s, "metal_dk", 0, 0, T, 1)
-    px(s, "metal_dk", 0, 0, 1, T)
-    px(s, "metal_lt", 1, 1, T - 2, 1)
-    # paver seams
-    px(s, "metal_dk", 8, 0, 1, T)
-    px(s, "metal_dk", 0, 8, T, 1)
+    s.fill(_c("metal"))
+    px(s, "metal_dk", 0, 0, T, U)
+    px(s, "metal_dk", 0, 0, U, T)
+    px(s, shade("metal", 18), U, U, T - U, 1)
+    # paver seams (cross)
+    px(s, "metal_dk", T // 2, 0, 1, T)
+    px(s, "metal_dk", 0, T // 2, T, 1)
+    # speckle
+    for (x, y) in ((10, 30), (34, 12), (20, 40), (40, 28)):
+        px(s, shade("metal", -14), x, y, 2, 2)
     return s
 
 
 def road_tile(dash=False):
     s = _surf()
-    px(s, "dark", 0, 0, T, T)
-    px(s, "shadow", 0, 0, T, 1)
-    _noise(s, "black", [(3, 5), (11, 9), (6, 12), (13, 3), (8, 7)])
+    s.fill(_c("dark"))
+    px(s, "shadow", 0, 0, T, U)
+    for (x, y) in ((8, 14), (33, 27), (18, 36), (39, 9), (24, 21), (12, 40)):
+        px(s, "black", x, y, 2, 2)
     if dash:
-        px(s, "yellow", 6, 4, 4, 8)
+        pygame.draw.rect(s, _c("yellow"), (T // 2 - 3, 10, 6, T - 20),
+                         border_radius=2)
     return s
 
 
 def storefront(color="red"):
-    """A building facade tile with a coloured awning band."""
     s = _surf()
-    px(s, "wall", 0, 0, T, T)
-    for y in range(0, T, 4):
+    s.fill(_c("wall"))
+    px(s, "wall_dk", 0, 0, T, T)
+    px(s, "wall", 0, 0, T, T - 16)
+    for y in range(0, T, 6):
         px(s, "wall_dk", 0, y, T, 1)
-    # windows
-    px(s, "glass", 2, 3, 4, 5)
-    px(s, "glass", 10, 3, 4, 5)
-    px(s, "metal_dk", 2, 3, 4, 5)
-    px(s, "glass", 3, 4, 2, 3)
-    px(s, "glass", 11, 4, 2, 3)
-    # awning along the bottom of the facade
-    px(s, color, 0, 11, T, 5)
-    px(s, "white", 0, 11, T, 1)
-    for x in range(1, T, 4):
-        px(s, "white", x, 12, 2, 4)
+    # two windows with glass + reflection
+    for wx in (6, 27):
+        pygame.draw.rect(s, _c("metal_dk"), (wx, 8, 15, 18))
+        pygame.draw.rect(s, _c("glass"), (wx + 2, 10, 11, 14))
+        pygame.draw.line(s, _c("white"), (wx + 3, 11), (wx + 6, 22), 1)
+        pygame.draw.line(s, _c(shade("glass", 30)), (wx + 8, 11), (wx + 10, 20), 1)
+    # awning with scalloped edge
+    pygame.draw.rect(s, _c(color), (0, T - 16, T, 11))
+    px(s, "white", 0, T - 16, T, 2)
+    for x in range(0, T, 8):
+        pygame.draw.polygon(s, _c("white"),
+                            [(x, T - 5), (x + 4, T - 5), (x + 2, T - 1)])
+    px(s, shade(color, -30), 0, T - 7, T, 2)
+    return s
+
+
+# ================================================================ fixtures ==
+def shelf(category_color="orange", level=3, broken=False):
+    s = _surf()
+    if broken:
+        px(s, "wood_dk", 0, 4, T, T - 8)
+        px(s, "shadow", 3, 7, T - 6, T - 14)
+        for (x, y, w) in ((4, 10, T - 8), (6, 28, T - 12), (10, 38, T - 18)):
+            px(s, "wood", x, y, w, 4)
+        for (x, y) in ((9, 18), (22, 21), (31, 15), (37, 31), (15, 34)):
+            px(s, "black", x, y, 3, 2)
+        outline(s, shade("wood_dk", -30))
+        return s
+    # cabinet body with bevel
+    pygame.draw.rect(s, _c("wood_dk"), (0, 0, T, T))
+    pygame.draw.rect(s, _c("wood"), (2, 2, T - 4, T - 4))
+    px(s, "wood_lt", 2, 2, T - 4, 2)
+    px(s, shade("wood_dk", -16), 2, T - 4, T - 4, 2)
+    # two shelf boards, each holding product "items"
+    for (by, sy) in ((8, 6), (28, 26)):
+        px(s, "wood_dk", 3, by + 14, T - 6, 3)          # board edge + shadow
+        px(s, shade("wood_dk", -20), 3, by + 17, T - 6, 2)
+        if level > 0:
+            n = {1: 2, 2: 3, 3: 4}[level]
+            gap = (T - 8) // n
+            for i in range(n):
+                ix = 5 + i * gap
+                pygame.draw.rect(s, _c(category_color), (ix, sy + 2, gap - 3, 12))
+                px(s, shade(category_color, 30), ix, sy + 2, gap - 3, 2)   # top light
+                px(s, shade(category_color, -28), ix, sy + 12, gap - 3, 2)  # base
+                px(s, "white", ix + 1, sy + 4, 1, 5)                       # highlight
+    return s
+
+
+def fridge(category_color="white", level=3):
+    s = _surf()
+    pygame.draw.rect(s, _c("metal_dk"), (0, 0, T, T))
+    pygame.draw.rect(s, _c("metal"), (2, 2, T - 4, T - 4))
+    pygame.draw.rect(s, _c("glass"), (5, 5, T - 10, T - 10))
+    px(s, shade("glass", 30), 5, 5, T - 10, 2)
+    # frosty diagonal reflection
+    pygame.draw.line(s, _c("white"), (9, 8), (16, T - 9), 2)
+    pygame.draw.line(s, _c(shade("glass", 24)), (18, 8), (24, T - 12), 1)
+    if level > 0:
+        n = {1: 2, 2: 3, 3: 3}[level]
+        gap = (T - 14) // n
+        for i in range(n):
+            ix = 8 + i * gap
+            pygame.draw.rect(s, _c(category_color), (ix, 12, gap - 4, 9))
+            pygame.draw.rect(s, _c(category_color), (ix, 28, gap - 4, 9))
+            px(s, shade(category_color, 28), ix, 12, gap - 4, 2)
+            px(s, shade(category_color, 28), ix, 28, gap - 4, 2)
+    px(s, "metal_lt", T - 7, 10, 3, T - 20)            # handle
+    return s
+
+
+def counter():
+    s = _surf()
+    pygame.draw.rect(s, _c("wood_dk"), (0, 0, T, T))
+    pygame.draw.rect(s, _c("wood"), (0, 0, T, T - 12))
+    px(s, "wood_lt", 0, 0, T, 3)
+    px(s, shade("wood", -14), 0, T - 18, T, 2)
+    px(s, "metal_dk", 0, T - 12, T, 12)
+    px(s, "metal", 0, T - 12, T, 2)
+    return s
+
+
+def register():
+    s = _surf()
+    pygame.draw.rect(s, _c("wood"), (0, 0, T, T))
+    px(s, "wood_lt", 0, 0, T, 3)
+    pygame.draw.rect(s, _c("metal_dk"), (9, 8, 30, 28))
+    pygame.draw.rect(s, _c("metal"), (12, 11, 24, 15))
+    pygame.draw.rect(s, _c("glass"), (15, 14, 18, 9))     # screen
+    px(s, "white", 16, 15, 6, 1)
+    pygame.draw.rect(s, _c("metal_lt"), (12, 28, 24, 6))  # keypad
+    for kx in range(14, 34, 4):
+        px(s, "metal_dk", kx, 29, 2, 2)
+        px(s, "metal_dk", kx, 32, 2, 1)
+    px(s, "green", 34, 12, 2, 2)
+    return s
+
+
+def crate(category_color="brown", level=3):
+    s = _surf()
+    if level >= 1:
+        pygame.draw.rect(s, _c(category_color), (9, 2, 9, 9))
+        px(s, "white", 9, 2, 3, 1)
+    if level >= 2:
+        pygame.draw.rect(s, _c(category_color), (24, 2, 9, 9))
+    if level >= 3:
+        pygame.draw.rect(s, _c("orange"), (18, 0, 6, 8))
+    pygame.draw.rect(s, _c("wood_dk"), (3, 6, T - 6, T - 9))
+    pygame.draw.rect(s, _c("wood"), (6, 9, T - 12, T - 15))
+    px(s, "wood_lt", 6, 9, T - 12, 2)
+    # slats + corner posts
+    px(s, "wood_dk", 6, 24, T - 12, 2)
+    px(s, "wood_dk", 6, 36, T - 12, 2)
+    px(s, "wood_dk", 6, 9, 3, T - 15)
+    px(s, "wood_dk", T - 9, 9, 3, T - 15)
+    if level == 0:
+        px(s, "shadow", 9, 12, T - 18, 8)
     return s
 
 
 def plant():
     s = _surf()
-    px(s, "wood_dk", 5, 11, 6, 4)
-    px(s, "wood", 5, 11, 6, 1)
-    px(s, "green_dk", 4, 4, 8, 7)
-    px(s, "green", 5, 3, 6, 6)
-    px(s, "green", 3, 6, 3, 3)
-    px(s, "green", 10, 6, 3, 3)
+    pygame.draw.rect(s, _c("wood_dk"), (15, T - 14, 18, 12), border_radius=2)
+    px(s, "wood", 15, T - 14, 18, 3)
+    px(s, shade("wood_dk", -16), 15, T - 4, 18, 2)
+    for (cx, cy, r, col) in ((24, 18, 11, "green_dk"), (24, 15, 9, "green"),
+                             (16, 22, 6, "green_dk"), (32, 22, 6, "green"),
+                             (24, 12, 5, shade("green", 26))):
+        pygame.draw.circle(s, _c(col), (cx, cy), r)
     return s
 
 
-# --------------------------------------------------------------- people -------
+# ================================================================== people ==
 def _person(shirt, hair="hair_brn", facing="down", apron=False):
     s = _surf()
-    # shadow
-    px(s, (0, 0, 0, 70), 4, 14, 8, 2)
+    pygame.draw.ellipse(s, (0, 0, 0, 80), (12, T - 7, 24, 6))   # shadow
     # legs
-    px(s, "wood_dk", 5, 12, 2, 3)
-    px(s, "wood_dk", 9, 12, 2, 3)
-    # body / shirt
-    px(s, shirt, 4, 7, 8, 6)
-    px(s, shirt, 3, 8, 1, 3)   # arms
-    px(s, shirt, 12, 8, 1, 3)
+    px(s, "wood_dk", 16, 36, 6, 9)
+    px(s, "wood_dk", 26, 36, 6, 9)
+    px(s, shade("wood_dk", -18), 16, 43, 6, 2)
+    px(s, shade("wood_dk", -18), 26, 43, 6, 2)
+    # torso
+    pygame.draw.rect(s, _c(shirt), (12, 20, 24, 18), border_radius=3)
+    px(s, shade(shirt, 24), 13, 21, 22, 2)
+    px(s, shade(shirt, -26), 13, 35, 22, 2)
+    px(s, shirt, 9, 22, 4, 10)        # arms
+    px(s, shirt, 35, 22, 4, 10)
+    px(s, "skin", 9, 30, 4, 4)        # hands
+    px(s, "skin", 35, 30, 4, 4)
     if apron:
-        px(s, "apron", 6, 8, 4, 5)
+        pygame.draw.rect(s, _c("apron"), (18, 22, 12, 15), border_radius=2)
+        px(s, shade("apron", 26), 19, 23, 10, 1)
     # head
-    px(s, "skin", 5, 2, 6, 6)
-    px(s, "skin2", 5, 7, 6, 1)
+    pygame.draw.rect(s, _c("skin"), (15, 6, 18, 17), border_radius=5)
+    px(s, "skin2", 15, 20, 18, 3)
+    px(s, shade("skin", 22), 16, 7, 10, 2)
     # hair
-    px(s, hair, 5, 1, 6, 2)
-    px(s, hair, 4, 2, 1, 3)
-    px(s, hair, 11, 2, 1, 3)
-    # face by facing
+    px(s, hair, 14, 4, 20, 6)
+    px(s, hair, 13, 6, 3, 9)
+    px(s, hair, 32, 6, 3, 9)
     if facing == "down":
-        px(s, "black", 6, 4, 1, 1)
-        px(s, "black", 9, 4, 1, 1)
+        for ex in (19, 27):
+            px(s, "white", ex, 12, 4, 4)
+            px(s, "black", ex + 1, 13, 2, 2)
+        px(s, "skin2", 23, 16, 2, 2)              # nose
+        px(s, shade("red", 10), 21, 19, 6, 1)     # smile
     elif facing == "up":
-        px(s, hair, 5, 2, 6, 4)
+        px(s, hair, 14, 4, 20, 11)
     elif facing == "left":
-        px(s, "black", 6, 4, 1, 1)
-        px(s, hair, 9, 2, 2, 4)
+        px(s, "white", 17, 12, 4, 4)
+        px(s, "black", 17, 13, 2, 2)
+        px(s, hair, 27, 6, 7, 10)
     elif facing == "right":
-        px(s, "black", 9, 4, 1, 1)
-        px(s, hair, 5, 2, 2, 4)
+        px(s, "white", 27, 12, 4, 4)
+        px(s, "black", 28, 13, 2, 2)
+        px(s, hair, 14, 6, 7, 10)
+    outline(s, shade(hair, -40))
     return s
 
 
@@ -279,137 +319,130 @@ def person_set(shirt, hair="hair_brn", apron=False):
             for f in ("down", "up", "left", "right")}
 
 
-# --------------------------------------------------------------- fx -----------
+# ====================================================================== fx ==
 def dirt_decal():
     s = _surf()
-    for (x, y) in [(3, 4), (4, 5), (5, 4), (4, 6), (9, 9), (10, 10),
-                   (11, 9), (10, 8), (7, 11), (12, 4)]:
-        px(s, "dirt", x, y, 2, 2)
-        px(s, "dirt2", x, y)
-    return s
-
-
-def _badge(s):
-    """A small cream sign-plate with a dark border, for product icons."""
-    px(s, "black", 2, 2, 13, 12)
-    px(s, "cream", 3, 3, 11, 10)
-    px(s, "white", 3, 3, 11, 1)
-
-
-def product_icon(key, fallback="orange"):
-    """A tiny 16x16 label icon showing roughly what a shelf sells."""
-    s = _surf()
-    _badge(s)
-    if key == "bread":
-        px(s, "wood", 4, 6, 9, 5)
-        px(s, "wood_lt", 4, 6, 9, 2)
-        px(s, "wood_dk", 6, 8, 1, 2)
-        px(s, "wood_dk", 9, 8, 1, 2)
-    elif key == "milk":
-        px(s, "white", 5, 5, 7, 7)
-        px(s, "metal", 6, 3, 5, 2)
-        px(s, "shirt_blue", 5, 8, 7, 2)
-    elif key == "eggs":
-        px(s, "white", 4, 6, 4, 5)
-        px(s, "white", 9, 6, 4, 5)
-        px(s, "cream", 5, 7, 2, 3)
-        px(s, "cream", 10, 7, 2, 3)
-    elif key == "apples":
-        px(s, "red", 4, 6, 9, 5)
-        px(s, "red_dk", 4, 9, 9, 2)
-        px(s, "green", 9, 3, 2, 2)
-        px(s, "wood_dk", 8, 3, 1, 3)
-    elif key == "bananas":
-        px(s, "yellow", 4, 5, 2, 2)
-        px(s, "yellow", 5, 6, 3, 2)
-        px(s, "yellow", 7, 7, 3, 2)
-        px(s, "yellow", 9, 6, 2, 3)
-        px(s, "wood_dk", 4, 5, 1, 1)
-    elif key == "lettuce":
-        px(s, "green", 4, 5, 9, 6)
-        px(s, "green_dk", 5, 7, 7, 2)
-        px(s, "green", 6, 4, 5, 2)
-    elif key == "chicken":
-        px(s, "skin", 5, 5, 6, 4)
-        px(s, "skin2", 5, 8, 6, 2)
-        px(s, "white", 10, 9, 3, 2)
-    elif key == "cereal":
-        px(s, "orange", 4, 4, 9, 8)
-        px(s, "red", 4, 4, 9, 2)
-        px(s, "yellow", 6, 7, 5, 3)
-    elif key == "pasta":
-        px(s, "yellow", 4, 4, 9, 8)
-        px(s, "red", 4, 4, 9, 2)
-        px(s, "wood_lt", 6, 6, 1, 5)
-        px(s, "wood_lt", 9, 6, 1, 5)
-    elif key == "beans":
-        px(s, "red_dk", 5, 4, 7, 8)
-        px(s, "metal_lt", 5, 4, 7, 1)
-        px(s, "cream", 6, 6, 5, 3)
-    elif key == "soda":
-        px(s, "purple", 6, 4, 4, 8)
-        px(s, "purple", 7, 3, 2, 1)
-        px(s, "white", 7, 6, 2, 3)
-    elif key == "chips":
-        px(s, "orange", 4, 4, 9, 9)
-        px(s, "yellow", 4, 4, 9, 2)
-        px(s, "red", 6, 7, 5, 3)
-    elif key == "soap":
-        px(s, "glass", 6, 5, 4, 7)
-        px(s, "white", 7, 3, 2, 2)
-        px(s, "metal_lt", 7, 7, 2, 2)
-    elif key == "coffee":
-        px(s, "wood_dk", 5, 5, 7, 7)
-        px(s, "wood", 5, 5, 7, 2)
-        px(s, "cream", 6, 7, 5, 3)
-    else:
-        px(s, fallback, 5, 5, 7, 7)
+    for (x, y, r) in ((12, 14, 4), (15, 18, 3), (30, 30, 4), (33, 27, 3),
+                      (22, 34, 3), (36, 13, 3), (9, 30, 3)):
+        pygame.draw.circle(s, _c("dirt"), (x, y), r)
+        pygame.draw.circle(s, _c("dirt2"), (x, y), max(1, r - 2))
     return s
 
 
 def coin():
     s = _surf()
-    px(s, "ui_gold", 5, 5, 6, 6)
-    px(s, "yellow", 6, 6, 4, 4)
-    px(s, "white", 6, 6, 1, 1)
+    pygame.draw.circle(s, _c("wood_dk"), (24, 24), 11)
+    pygame.draw.circle(s, _c("ui_gold"), (24, 24), 10)
+    pygame.draw.circle(s, _c("yellow"), (24, 24), 6)
+    px(s, "white", 20, 18, 3, 3)
+    px(s, shade("ui_gold", -40), 28, 30, 4, 3)
     return s
 
 
 def sparkle():
     s = _surf()
-    px(s, "white", 7, 4, 2, 8)
-    px(s, "white", 4, 7, 8, 2)
-    px(s, "yellow", 7, 5, 2, 6)
-    px(s, "yellow", 5, 7, 6, 2)
+    pygame.draw.polygon(s, _c("white"),
+                        [(24, 8), (27, 21), (40, 24), (27, 27),
+                         (24, 40), (21, 27), (8, 24), (21, 21)])
+    pygame.draw.polygon(s, _c("yellow"),
+                        [(24, 14), (26, 22), (34, 24), (26, 26),
+                         (24, 34), (22, 26), (14, 24), (22, 22)])
     return s
 
 
-# ------------------------------------------------------------- build all ------
+# ============================================================ product icons ==
+def _badge(s):
+    pygame.draw.rect(s, _c("black"), (5, 5, T - 11, T - 11), border_radius=4)
+    pygame.draw.rect(s, _c("cream"), (7, 7, T - 15, T - 15), border_radius=3)
+    px(s, "white", 8, 8, T - 17, 2)
+
+
+def product_icon(key, fallback="orange"):
+    s = _surf()
+    _badge(s)
+    cx, cy = 24, 25
+    if key == "bread":
+        pygame.draw.ellipse(s, _c("wood"), (12, 18, 24, 16))
+        pygame.draw.ellipse(s, _c("wood_lt"), (13, 17, 22, 8))
+        for x in (18, 24, 30):
+            px(s, "wood_dk", x, 22, 1, 7)
+    elif key == "milk":
+        pygame.draw.rect(s, _c("white"), (16, 14, 16, 22), border_radius=2)
+        pygame.draw.polygon(s, _c("white"), [(16, 14), (32, 14), (28, 9), (20, 9)])
+        pygame.draw.rect(s, _c("shirt_blue"), (16, 26, 16, 6))
+    elif key == "eggs":
+        for ex in (17, 27):
+            pygame.draw.ellipse(s, _c("white"), (ex, 16, 9, 13))
+            pygame.draw.ellipse(s, _c("cream"), (ex + 2, 22, 5, 5))
+    elif key == "apples":
+        pygame.draw.circle(s, _c("red"), (cx, 27), 10)
+        pygame.draw.circle(s, _c(shade("red", 36)), (20, 23), 3)
+        px(s, "wood_dk", 23, 13, 2, 5)
+        pygame.draw.circle(s, _c("green"), (28, 14), 3)
+    elif key == "bananas":
+        pygame.draw.arc(s, _c("yellow"), (12, 12, 24, 24), 3.6, 5.8, 6)
+        px(s, "wood_dk", 14, 18, 3, 3)
+    elif key == "lettuce":
+        pygame.draw.circle(s, _c("green"), (cx, 26), 11)
+        pygame.draw.circle(s, _c("green_dk"), (cx, 28), 7)
+        pygame.draw.circle(s, _c(shade("green", 26)), (20, 22), 3)
+    elif key == "chicken":
+        pygame.draw.circle(s, _c("skin"), (22, 24), 9)
+        pygame.draw.rect(s, _c("white"), (29, 28, 8, 5), border_radius=2)
+        px(s, "skin2", 18, 28, 8, 3)
+    elif key == "cereal":
+        pygame.draw.rect(s, _c("orange"), (13, 13, 22, 24), border_radius=2)
+        px(s, "red", 13, 13, 22, 5)
+        pygame.draw.circle(s, _c("yellow"), (24, 26), 5)
+    elif key == "pasta":
+        pygame.draw.rect(s, _c("yellow"), (14, 12, 20, 25), border_radius=2)
+        px(s, "red", 14, 12, 20, 5)
+        for x in (19, 24, 29):
+            px(s, "wood_lt", x, 19, 2, 14)
+    elif key == "beans":
+        pygame.draw.rect(s, _c("red_dk"), (15, 13, 18, 22), border_radius=3)
+        px(s, "metal_lt", 15, 13, 18, 3)
+        pygame.draw.rect(s, _c("cream"), (18, 19, 12, 9))
+    elif key == "soda":
+        pygame.draw.rect(s, _c("purple"), (18, 12, 12, 25), border_radius=4)
+        pygame.draw.rect(s, _c("purple"), (21, 8, 6, 5))
+        pygame.draw.rect(s, _c("white"), (20, 20, 8, 8))
+    elif key == "chips":
+        pygame.draw.rect(s, _c("orange"), (13, 12, 22, 26), border_radius=3)
+        px(s, "yellow", 13, 12, 22, 6)
+        pygame.draw.circle(s, _c("red"), (24, 26), 6)
+    elif key == "soap":
+        pygame.draw.rect(s, _c("glass"), (18, 14, 12, 22), border_radius=3)
+        pygame.draw.rect(s, _c("white"), (21, 9, 6, 6), border_radius=2)
+        pygame.draw.circle(s, _c("white"), (24, 24), 3)
+    elif key == "coffee":
+        pygame.draw.rect(s, _c("wood_dk"), (15, 13, 18, 23), border_radius=3)
+        px(s, "wood", 15, 13, 18, 5)
+        pygame.draw.circle(s, _c("cream"), (24, 26), 5)
+    else:
+        pygame.draw.circle(s, _c(fallback), (cx, cy), 9)
+    return s
+
+
+# ================================================================ build all ==
 def build_sprites():
-    """Build and return a dict of all base (unscaled) sprites."""
     sp = {
-        "floor":        floor_tile(),
-        "floor_crack":  floor_tile(crack=True),
-        "floor_new":    floor_tile(new=True),
-        "wall":         wall_tile(),
-        "door":         door_tile(),
-        "counter":      counter(),
-        "register":     register(),
-        "plant":        plant(),
-        "sidewalk":     sidewalk_tile(),
-        "road":         road_tile(),
-        "road_dash":    road_tile(dash=True),
-        "storefront":   storefront("wall"),
-        "crate0":       crate(level=0),
-        "crate1":       crate(level=1),
-        "crate2":       crate(level=2),
-        "crate3":       crate(level=3),
-        "dirt":         dirt_decal(),
-        "coin":         coin(),
-        "sparkle":      sparkle(),
+        "floor":       floor_tile(),
+        "floor_crack": floor_tile(crack=True),
+        "floor_new":   floor_tile(new=True),
+        "wall":        wall_tile(),
+        "door":        door_tile(),
+        "counter":     counter(),
+        "register":    register(),
+        "plant":       plant(),
+        "sidewalk":    sidewalk_tile(),
+        "road":        road_tile(),
+        "road_dash":   road_tile(dash=True),
+        "storefront":  storefront("wall"),
+        "dirt":        dirt_decal(),
+        "coin":        coin(),
+        "sparkle":     sparkle(),
     }
-    # dirty floors at levels 1..3 (and on new floor)
-    for lvl in (1, 2, 3):
-        sp[f"floor_dirty{lvl}"] = floor_tile(dirty=lvl)
-        sp[f"floor_new_dirty{lvl}"] = floor_tile(new=True, dirty=lvl)
+    for lvl in (0, 1, 2, 3):
+        sp[f"crate{lvl}"] = crate(level=lvl)
     return sp
