@@ -33,6 +33,9 @@ from settings import (
 from world import World, Shelf
 from entities import Customer, Staff
 from street import Street, BLOCK_W, BUILD_BOTTOM
+from cafe import Cafe, CafeGuest
+from settings import (CAFE_START_SUPPLIES, CAFE_SUPPLY_BATCH, CAFE_SUPPLY_COST,
+                      CAFE_MEAL_BASE, CAFE_MEAL_TIP)
 
 try:
     import net                 # legacy direct-IP networking (desktop only)
@@ -251,6 +254,7 @@ class Game:
         self._build_cache = {}                    # cached street building sprites
         self._bg_cache = self._bg_key = None      # cached static store floor/walls
         self._st_bg = self._st_key = None         # cached static street tiles
+        self._caf_bg = self._caf_key = None       # cached static cafe interior
         self._build_people_sprites()
 
         # networking / mode
@@ -304,6 +308,11 @@ class Game:
         """Fresh store + economy. Used by single-player and host."""
         self.world = World()
         self.street = Street()
+        self.cafe = Cafe()
+        self.cafe_guests = []
+        self.cafe_supplies = CAFE_START_SUPPLIES
+        self.cafe_carry = False      # is the player carrying a plate of food?
+        self.cafe_spawn_timer = 3.0
         self.paused = False
         self.shop_open = True        # when False: no new shoppers come in
         self.players = {0: Player(*SPAWN_TILES[0], pid=0, name="You", color_idx=0)}
@@ -502,6 +511,9 @@ class Game:
         if player.scene == "street":
             self._street_interact(player)
             return
+        if player.scene == "cafe":
+            self._cafe_interact(player)
+            return
         if player.action_timer > 0:
             return
         ft = player.front_tile()
@@ -555,8 +567,18 @@ class Game:
             if player is self.me:
                 self.toast("Back inside the store!", "ui_good")
             return
+        if shop.id == "cafe" and shop.owned:
+            player.scene = "cafe"
+            ex = self.cafe.entrance
+            player.x, player.y = ex[0] * TILE, ex[1] * TILE
+            player.facing, player.idx, player.idy = "up", 0, 0
+            if player is self.me:
+                self.toast("Welcome to the Cozy Cafe! Seat & serve your guests.",
+                           "ui_good")
+            return
         if shop.owned:
-            self.toast(f"You already own the {shop.name}.", "ui_dim")
+            self.toast(f"You own the {shop.name} -- it earns passive income.",
+                       "ui_dim")
         elif self.money >= shop.price:
             self.money -= shop.price
             shop.owned = True
@@ -565,6 +587,77 @@ class Game:
         else:
             self.toast(f"The {shop.name} costs {money_str(shop.price)} "
                        f"-- not enough cash.", "ui_bad")
+
+    # ------------------------------------------------------------- cafe ---
+    def _cafe_spawn(self, dt):
+        if any(t["guest"] is None for t in self.cafe.tables) and \
+                len(self.cafe_guests) < len(self.cafe.tables):
+            self.cafe_spawn_timer -= dt
+            if self.cafe_spawn_timer <= 0:
+                self.cafe_spawn_timer = random.uniform(4.0, 8.0)
+                self.cafe_guests.append(
+                    CafeGuest(self.cafe, random.randrange(len(self.cust_spr))))
+
+    def on_cafe_rage(self, guest):
+        self.reputation = max(0, self.reputation - 1)
+        self.toast("A cafe guest left without being served!", "ui_bad")
+
+    def _buy_cafe_supplies(self):
+        if self.money < CAFE_SUPPLY_COST:
+            self.toast(f"Cafe supplies cost {money_str(CAFE_SUPPLY_COST)}.",
+                       "ui_bad")
+            return
+        self.money -= CAFE_SUPPLY_COST
+        self.cafe_supplies += CAFE_SUPPLY_BATCH
+        self.toast(f"Bought {CAFE_SUPPLY_BATCH} cafe supplies "
+                   f"(-{money_str(CAFE_SUPPLY_COST)}).", "ui_good")
+
+    def _cafe_pay(self, guest):
+        tip = CAFE_MEAL_TIP * guest.patience_frac()
+        pay = CAFE_MEAL_BASE + tip
+        self.money += pay
+        self.day_revenue += pay
+        self.popup(guest.w.x, guest.w.y - 4, "coin", money_str(pay))
+        guest._leave(self)
+
+    def _cafe_interact(self, player):
+        cafe = self.cafe
+        pc, pr = player.tile()
+
+        def near(t):
+            return abs(pc - t[0]) <= 1 and abs(pr - t[1]) <= 1
+        if near(cafe.supply):
+            self._buy_cafe_supplies()
+            return
+        if any(near(k) for k in cafe.kitchen):
+            if self.cafe_carry:
+                self.toast("You're already carrying a plate.", "ui_dim")
+            elif self.cafe_supplies <= 0:
+                self.toast("Out of supplies! Buy more at the crate (top-left).",
+                           "ui_bad")
+            else:
+                self.cafe_supplies -= 1
+                self.cafe_carry = True
+                self.toast("Picked up a plate of food.", "ui_good")
+            return
+        for g in self.cafe_guests:
+            if g.seat and near(g.seat):
+                if g.state == "ordered" and self.cafe_carry:
+                    self.cafe_carry = False
+                    g.serve_food()
+                    self.toast("Served the food! They'll want the check soon.",
+                               "ui_good")
+                elif g.state == "ordered":
+                    self.toast(f"They ordered {g.order} -- grab a plate from the "
+                               "kitchen counter (top).", "ui_dim")
+                elif g.state == "check":
+                    self._cafe_pay(g)
+                    self.toast("Collected the check!", "ui_good")
+                else:
+                    self.toast("They're still settling in...", "ui_dim")
+                return
+        self.toast("Kitchen (top) = grab food, tables = serve, "
+                   "crate (top-left) = supplies.", "ui_dim")
 
     def _restock_shelf(self, sh, player):
         avail = self.backstock.get(sh.product, 0)
@@ -924,7 +1017,7 @@ class Game:
         p.idx, p.idy = dx, dy
 
     def _scene_map(self, scene):
-        return self.street if scene == "street" else self.world
+        return {"street": self.street, "cafe": self.cafe}.get(scene, self.world)
 
     def _check_transition(self, p):
         if p.scene == "store":
@@ -937,6 +1030,20 @@ class Game:
                 if p is self.me:
                     self.toast("You step out onto the street. Find shops to buy!",
                                "ui_good")
+        elif p.scene == "cafe":
+            if p.tile() in self.cafe.door_tiles:
+                p.scene = "street"
+                p.x, p.y = 2 * TILE, 10 * TILE     # out front of the cafe
+                p.facing, p.idx, p.idy = "down", 0, 0
+                if p is self.me:
+                    self.toast("Left the cafe -- it now earns passive income.",
+                               "ui_dim")
+                # guests go home; the cafe runs passively while you're away
+                for t in self.cafe.tables:
+                    t["guest"] = None
+                self.cafe_guests = []
+                self.cafe_carry = False
+                self.cafe_spawn_timer = 3.0
 
     def update(self, dt):
         if self.mode == "client" or self.phase != PHASE_PLAY:
@@ -952,17 +1059,27 @@ class Game:
         self._advance_clock(dt)
         if self.phase != PHASE_PLAY:
             return
-        self._maybe_spawn(dt)
+        local = self._local_scene()
+        # the grocery store only draws new shoppers while you're actually in it;
+        # step out to a shop and it "closes" (runs as passive income).
+        if local == "store":
+            self._maybe_spawn(dt)
         for cust in self.customers:
             cust.update(self, dt)
         self.customers = [c for c in self.customers if not c.done]
         for s in self.staff:
             s.update(self, dt)
         self._process_checkouts(dt)
+        # the cafe minigame runs while you're inside it
+        if local == "cafe":
+            self._cafe_spawn(dt)
+            for g in self.cafe_guests:
+                g.update(self, dt)
+            self.cafe_guests = [g for g in self.cafe_guests if not g.done]
 
         # the store dies if there is nothing left to sell anywhere
-        # (disabled in relaxed mode -- less stressful)
-        if self._total_stock() <= 0 and not self.relaxed:
+        # (only checked while you're in the store; disabled in relaxed mode)
+        if local == "store" and self._total_stock() <= 0 and not self.relaxed:
             self.death_reason = "out_of_stock"
             self.phase = PHASE_OVER
             return
@@ -1410,11 +1527,71 @@ class Game:
 
     def _draw_playfield_scaled(self):
         """Draw whichever scene the local player is in."""
-        if self._local_scene() == "street":
+        scene = self._local_scene()
+        if scene == "street":
             self._draw_street()
+        elif scene == "cafe":
+            self._draw_cafe()
         else:
             self._draw_world()
         self.screen.blit(self.play, (0, 0))
+
+    def _cafe_bg(self):
+        cf = self.cafe
+        key = id(cf)
+        if self._caf_bg is None or self._caf_key != key:
+            bg = pygame.Surface((PLAYFIELD_W * SCALE, PLAYFIELD_H * SCALE))
+            bg.fill(C("black"))
+            for r in range(GRID_H):
+                for c in range(GRID_W):
+                    t = cf.grid[r][c]
+                    xy = (c * RT, r * RT)
+                    if (c, r) == cf.supply:
+                        bg.blit(self.sprites["crate3"], xy)
+                    elif t == "wall":
+                        bg.blit(self.sprites["wall"], xy)
+                    elif t == "door":
+                        bg.blit(self.sprites["door"], xy)
+                    elif t == "counter":
+                        bg.blit(self.sprites["counter"], xy)
+                    elif t == "table":
+                        bg.blit(self.sprites["cafe_table"], xy)
+                    else:
+                        bg.blit(self.sprites["floor_new"], xy)
+            bg.blit(self.sprites["coffee_machine"], (7 * RT, 2 * RT))
+            bg.blit(self.sprites["coffee_machine"], (11 * RT, 2 * RT))
+            self._caf_bg, self._caf_key = bg, key
+        return self._caf_bg
+
+    def _draw_cafe(self):
+        s = self.play
+        s.blit(self._cafe_bg(), (0, 0))
+        draws = []
+        for g in self.cafe_guests:
+            spr = self.cust_spr[g.skin][g.w.facing]
+            draws.append((g.w.y + 15, spr, g.w.x * SCALE, g.w.y * SCALE))
+        for p in self.players.values():
+            if p.scene != "cafe":
+                continue
+            spr = self.player_sprs[p.color_idx % len(self.player_sprs)][p.facing]
+            draws.append((p.y + 15, spr, p.x * SCALE, p.y * SCALE))
+        draws.sort(key=lambda d: d[0])
+        for _, spr, x, y in draws:
+            s.blit(spr, (int(x), int(y)))
+        # order / check thought icons above guests
+        for g in self.cafe_guests:
+            ic = (self.sprites["food"] if g.state == "ordered" else
+                  self.sprites["check"] if g.state == "check" else None)
+            if ic:
+                s.blit(ic, (int(g.w.x * SCALE), int((g.w.y - 15) * SCALE)))
+        # the plate you're carrying
+        if self.cafe_carry and self.me and self.me.scene == "cafe":
+            s.blit(self.sprites["food"],
+                   (int(self.me.x * SCALE), int((self.me.y - 15) * SCALE)))
+        for p in self.popups:
+            if p["kind"] == "coin":
+                s.blit(self.sprites["coin"],
+                       (int(p["x"] * SCALE), int(p["y"] * SCALE)))
 
     def _building_spr(self, color, theme):
         key = (color, theme)
@@ -1464,8 +1641,10 @@ class Game:
             self._text(sc, self.font_m, name, bx, 56, "wood_dk", center=True)
             if is_store:
                 txt, col = "Press E to enter", "white"
+            elif shop.id == "cafe" and shop.owned:
+                txt, col = "OWNED -- press E to run it", "ui_good"
             elif shop.owned:
-                txt, col = "OWNED", "ui_good"
+                txt, col = "OWNED (passive income)", "ui_good"
             else:
                 txt, col = f"For sale: {money_str(shop.price)}", "ui_gold"
             img = self.font_s.render(txt, True, C(col))
@@ -1538,10 +1717,15 @@ class Game:
         sx = 624
         roles = " ".join(f"{STAFF_TYPES[r]['name'][:4]}:{self.staff_count(r)}"
                          for r in STAFF_TYPES)
-        self._text(sc, self.font_s, roles, sx, y, "ui_dim")
-        self._text(sc, self.font_s,
-                   f"Stockroom units: {sum(self.backstock.values())}",
-                   sx, y + 18, "ui_dim")
+        if self._local_scene() == "cafe":
+            self._text(sc, self.font_s, "COZY CAFE", sx, y, "ui_accent")
+            self._text(sc, self.font_s,
+                       f"Supplies: {self.cafe_supplies}", sx, y + 18, "ui_dim")
+        else:
+            self._text(sc, self.font_s, roles, sx, y, "ui_dim")
+            self._text(sc, self.font_s,
+                       f"Stockroom units: {sum(self.backstock.values())}",
+                       sx, y + 18, "ui_dim")
         self._text(sc, self.font_s,
                    "WASD move - E interact - TAB manage - O open/close - P pause",
                    16, y + 84, "ui_dim")

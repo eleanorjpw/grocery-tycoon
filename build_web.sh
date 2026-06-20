@@ -13,8 +13,8 @@ echo "Installing pygbag (pinned to match the vendored runtime wheel)..."
 # Stage only the files the web build needs (no net.py, no tests, no venv).
 STAGE="$(mktemp -d)/grocerytycoon"
 mkdir -p "$STAGE"
-cp settings.py art.py world.py entities.py street.py game.py relay_net.py \
-   saves_api.py "$STAGE/"
+cp settings.py art.py world.py entities.py street.py cafe.py game.py \
+   relay_net.py saves_api.py "$STAGE/"
 cp web_main.py "$STAGE/main.py"
 
 echo "Building WASM bundle..."

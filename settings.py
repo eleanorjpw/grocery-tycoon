@@ -149,6 +149,14 @@ UPGRADES = [
 SHELF_PRICE = 160
 REPAIR_COST = 80            # cost to fix a broken shelf
 
+# --------------------------------------------------------------- cafe ---------
+CAFE_FOODS = ["coffee", "sandwich", "cake", "salad", "muffin", "soup"]
+CAFE_START_SUPPLIES = 12
+CAFE_SUPPLY_BATCH = 10
+CAFE_SUPPLY_COST = 45       # pay this for a batch of ingredients
+CAFE_MEAL_BASE = 12.0       # what a guest pays for a meal
+CAFE_MEAL_TIP = 8.0         # extra tip, scaled by how fast you served them
+
 # --------------------------------------------------------------- network ------
 NET_PORT = 50007            # TCP port the host listens on (legacy direct-IP)
 

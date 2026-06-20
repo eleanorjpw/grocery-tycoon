@@ -384,6 +384,51 @@ def sparkle():
     return s
 
 
+# ------------------------------------------------------------------- cafe -----
+def cafe_table():
+    s = _surf()
+    px(s, "wood_dk", 4, 12, 2, 4)        # legs
+    px(s, "wood_dk", 10, 12, 2, 4)
+    px(s, "wood_dk", 2, 3, T - 4, 10)    # table top
+    px(s, "cream", 3, 4, T - 6, 7)       # tablecloth
+    px(s, "white", 3, 4, T - 6, 1)
+    px(s, "wood_lt", 3, 4, 1, 7)
+    px(s, "red", 7, 6, 2, 3)             # little flower vase
+    px(s, "green", 7, 8, 2, 2)
+    return s
+
+
+def coffee_machine():
+    s = _surf()
+    px(s, "metal_dk", 3, 2, 10, 12)
+    px(s, "metal", 4, 3, 8, 10)
+    px(s, "glass", 5, 5, 6, 3)
+    px(s, "red", 11, 4, 1, 1)
+    px(s, "metal_lt", 6, 11, 4, 2)
+    return s
+
+
+def food_icon():
+    s = _surf()
+    px(s, "metal_lt", 2, 9, 12, 2)       # plate
+    px(s, "white", 3, 7, 10, 3)
+    px(s, "orange", 5, 4, 6, 4)          # food
+    px(s, "red", 6, 3, 3, 2)
+    px(s, "green", 9, 5, 2, 2)
+    return s
+
+
+def check_icon():
+    s = _surf()
+    px(s, "white", 4, 2, 8, 12)
+    px(s, "ui_dim", 5, 4, 6, 1)
+    px(s, "ui_dim", 5, 6, 6, 1)
+    px(s, "ui_dim", 5, 8, 5, 1)
+    px(s, "green_dk", 5, 10, 6, 3)
+    px(s, "white", 7, 11, 2, 1)
+    return s
+
+
 # --------------------------------------------------------- street buildings --
 def _shade(c, d):
     r, g, b = (PAL[c] if isinstance(c, str) else c)[:3]
@@ -499,6 +544,10 @@ def build_sprites():
         "dirt":         dirt_decal(),
         "coin":         coin(),
         "sparkle":      sparkle(),
+        "cafe_table":   cafe_table(),
+        "coffee_machine": coffee_machine(),
+        "food":         food_icon(),
+        "check":        check_icon(),
     }
     # dirty floors at levels 1..3 (and on new floor)
     for lvl in (1, 2, 3):
