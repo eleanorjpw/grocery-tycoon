@@ -1675,11 +1675,13 @@ class Game:
         shelf_totals = {p[0]: sum(s.stock for s in self.world.shelves
                                   if s.product == p[0] and not s.broken)
                         for p in PRODUCTS}
-        n_out = sum(1 for v in shelf_totals.values() if v == 0)
+        # truly OUT = nothing on the shelf AND nothing in the stockroom
+        n_out = sum(1 for k, v in shelf_totals.items()
+                    if v == 0 and self.backstock.get(k, 0) == 0)
         head = ("Order cases of 12 -- deliveries arrive next morning. "
                 "*cold* items spoil without a fridge.")
         if n_out:
-            head = f"!! {n_out} product(s) OUT on the shelves !!   " + head
+            head = f"!! {n_out} product(s) OUT (none in front or back) !!   " + head
         self._text(sc, self.font_s, head, body.x, body.y,
                    "ui_bad" if n_out else "ui_dim")
         cols = 2
@@ -1694,20 +1696,28 @@ class Game:
             shelf_total = shelf_totals[key]
             back = self.backstock.get(key, 0)
             inbound = self.pending.get(key, 0)
-            out = shelf_total == 0
+            out = shelf_total == 0 and back == 0        # nothing front or back
+            restock = shelf_total == 0 and back > 0     # shelf empty, stock in back
             low = 0 < shelf_total < 8
-            # coloured status dot + name so out-of-stock items jump out
-            dot_col = "ui_bad" if out else ("ui_gold" if low else "ui_good")
+            # status dot + name: red OUT, yellow RESTOCK/low, green otherwise
+            if out:
+                dot_col = name_col = "ui_bad"
+                status = "  OUT!"
+            elif restock:
+                dot_col = name_col = "ui_gold"
+                status = "  RESTOCK"
+            elif low:
+                dot_col = name_col = "ui_gold"
+                status = "  low"
+            else:
+                dot_col, name_col, status = "ui_good", "ui_text", ""
             pygame.draw.circle(sc, C(dot_col), (x + 4, y + 7), 4)
-            name_col = "ui_bad" if out else ("ui_gold" if low else "ui_text")
-            status = "  OUT!" if out else ("  low" if low else "")
             tag = " *cold*" if info["perishable"] else ""
             self._text(sc, self.font_s, f"{info['name']}{tag}{status}",
                        x + 14, y, name_col)
             self._text(sc, self.font_s,
                        f"shelf {shelf_total}  back {back}  inbound {inbound}",
-                       x + 14, y + 15, "ui_bad" if (out and back == 0 and
-                       inbound == 0) else "ui_dim")
+                       x + 14, y + 15, "ui_bad" if out else "ui_dim")
             price = info["wholesale"] * CASE_SIZE * self.cost_mult
             if self._button((x + cw - 150, y, 130, 30),
                             f"+12  {money_str(price)}"):
