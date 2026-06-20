@@ -67,13 +67,13 @@ g.update(0.05)
 assert g.me.scene == "street", "did not go outside"
 g.draw()                                       # render the street + signs
 shop = g.street.shops[0]
-g.me.x, g.me.y = shop.col * 16.0, 5 * 16.0      # stand in front of shop
+g.me.x, g.me.y = shop.door[0] * 16.0, 10 * 16.0  # stand in front of the door
 g.me.facing = "up"
 g.money += shop.price + 100
 g.interact(g.me)
 assert shop.owned, "shop purchase failed"
-# go back inside via the store door
-g.me.x, g.me.y = g.street.store_col * 16.0, 5 * 16.0
+# go back inside via your store's door
+g.me.x, g.me.y = g.street.store_col * 16.0, 10 * 16.0
 g.me.facing = "up"
 g.interact(g.me)
 assert g.me.scene == "store", "did not return inside"

@@ -32,7 +32,7 @@ from settings import (
 )
 from world import World, Shelf
 from entities import Customer, Staff
-from street import Street
+from street import Street, BLOCK_W, BUILD_BOTTOM
 
 try:
     import net                 # legacy direct-IP networking (desktop only)
@@ -77,6 +77,11 @@ def money_str(v):
 
 
 RT = TILE * SCALE        # render tile size in screen px (sprites are RTxRT)
+
+
+def chunky(surf):
+    """Upscale a 16px sprite to RT with nearest-neighbour (blocky 32-bit look)."""
+    return pygame.transform.scale(surf, (RT, RT))
 
 PLAYER_SHIRTS = ["shirt_red", "shirt_blue", "shirt_grn", "purple",
                  "orange", "shirt_ylw"]
@@ -237,13 +242,13 @@ class Game:
         self.font_l = pygame.font.SysFont("menlo,consolas,monospace", 26, bold=True)
         self.font_xl = pygame.font.SysFont("menlo,consolas,monospace", 40, bold=True)
 
-        self.sprites = art.build_sprites()
-        self.icons = {p[0]: art.product_icon(p[0], PRODUCT_BY_KEY[p[0]]["color"])
-                      for p in PRODUCTS}
-        from street import SHOPS as _SHOPS
-        self.front_sprs = {c: art.storefront(c)
-                           for c in {s[4] for s in _SHOPS} | {"ui_gold"}}
+        # 32-bit chunky look: sprites are authored at 16px, then upscaled with
+        # nearest-neighbour so the pixels stay crisp and blocky (Stardew-style).
+        self.sprites = {k: chunky(v) for k, v in art.build_sprites().items()}
+        self.icons = {p[0]: chunky(art.product_icon(p[0],
+                      PRODUCT_BY_KEY[p[0]]["color"])) for p in PRODUCTS}
         self._shelf_cache = {}
+        self._build_cache = {}                    # cached street building sprites
         self._bg_cache = self._bg_key = None      # cached static store floor/walls
         self._st_bg = self._st_key = None         # cached static street tiles
         self._build_people_sprites()
@@ -284,15 +289,15 @@ class Game:
 
     # -------------------------------------------------------- setup -------
     def _build_people_sprites(self):
-        self.player_sprs = [art.person_set(c, "hair_brn", apron=True)
-                            for c in PLAYER_SHIRTS]
-        self.cust_spr = []
+        def cset(shirt, hair, apron):
+            return {f: chunky(spr)
+                    for f, spr in art.person_set(shirt, hair, apron).items()}
+        self.player_sprs = [cset(c, "hair_brn", True) for c in PLAYER_SHIRTS]
         combos = [("shirt_blue", "hair_brn"), ("shirt_grn", "black"),
                   ("purple", "hair_brn"), ("orange", "black"),
                   ("cream", "wood_dk"), ("shirt_ylw", "hair_brn")]
-        for shirt, hair in combos:
-            self.cust_spr.append(art.person_set(shirt, hair, apron=False))
-        self.staff_spr = {role: art.person_set(d["color"], "hair_brn", apron=True)
+        self.cust_spr = [cset(shirt, hair, False) for shirt, hair in combos]
+        self.staff_spr = {role: cset(d["color"], "hair_brn", True)
                           for role, d in STAFF_TYPES.items()}
 
     def reset_world(self):
@@ -1293,7 +1298,7 @@ class Game:
                 surf = art.fridge(sh.color, sh.level())
             else:
                 surf = art.shelf(sh.color, sh.level())
-            self._shelf_cache[key] = surf
+            self._shelf_cache[key] = chunky(surf)
         return self._shelf_cache[key]
 
     def _floor_sprite(self, c, r):
@@ -1403,33 +1408,33 @@ class Game:
             self._draw_world()
         self.screen.blit(self.play, (0, 0))
 
+    def _building_spr(self, color, theme):
+        key = (color, theme)
+        if key not in self._build_cache:
+            raw = art.street_building(BLOCK_W, BUILD_BOTTOM + 1, color, theme)
+            self._build_cache[key] = pygame.transform.scale(
+                raw, (BLOCK_W * RT, (BUILD_BOTTOM + 1) * RT))
+        return self._build_cache[key]
+
     def _street_bg(self):
         st = self.street
         key = id(st)
         if self._st_bg is None or self._st_key != key:
             bg = pygame.Surface((PLAYFIELD_W * SCALE, PLAYFIELD_H * SCALE))
             bg.fill(C("black"))
-            shop_cols = {sh.col: sh for sh in st.shops}
+            # ground: sidewalk + road (buildings cover the wall rows on top)
             for r in range(GRID_H):
                 for c in range(GRID_W):
                     t = st.grid[r][c]
-                    xy = (c * RT, r * RT)
-                    if t == "wall":
-                        if r == 3 and c in shop_cols:
-                            bg.blit(self.front_sprs.get(shop_cols[c].color,
-                                    self.sprites["storefront"]), xy)
-                        elif r == 3 and c == st.store_col:
-                            bg.blit(self.front_sprs["ui_gold"], xy)
-                        else:
-                            bg.blit(self.sprites["storefront" if r >= 2
-                                    else "wall"], xy)
-                    elif t == "door":
-                        bg.blit(self.sprites["door"], xy)
-                    elif t == "road":
-                        dash = (c % 4 == 1 and r == 10)
-                        bg.blit(self.sprites["road_dash" if dash else "road"], xy)
-                    else:
-                        bg.blit(self.sprites["sidewalk"], xy)
+                    if t == "road":
+                        dash = (c % 4 == 1 and r == BUILD_BOTTOM + 2)
+                        bg.blit(self.sprites["road_dash" if dash else "road"],
+                                (c * RT, r * RT))
+                    elif t == "floor":
+                        bg.blit(self.sprites["sidewalk"], (c * RT, r * RT))
+            # big detailed storefront buildings
+            for (c0, color, theme, shop, is_store) in st.buildings():
+                bg.blit(self._building_spr(color, theme), (c0 * RT, 0))
             self._st_bg, self._st_key = bg, key
         return self._st_bg
 
@@ -1443,16 +1448,24 @@ class Game:
             s.blit(spr, (int(p.x * SCALE), int(p.y * SCALE)))
 
     def _draw_street_signs(self):
-        """Shop names + prices, drawn in screen space over the storefronts."""
-        st = self.street
-        for shop in st.shops:
-            x = int((shop.col * TILE + TILE / 2) * SCALE)
-            y = int((2 * TILE) * SCALE)
-            self._sign(x, y, shop.name,
-                       "OWNED" if shop.owned else money_str(shop.price),
-                       "ui_good" if shop.owned else "ui_gold")
-        x = int((st.store_col * TILE + TILE / 2) * SCALE)
-        self._sign(x, int((2 * TILE) * SCALE), "YOUR STORE", "press E", "white")
+        """Shop names (on the plaque) + status, drawn over each building."""
+        sc = self.screen
+        for (c0, color, theme, shop, is_store) in self.street.buildings():
+            bx = c0 * RT + (BLOCK_W * RT) // 2
+            name = "YOUR STORE" if is_store else shop.name
+            self._text(sc, self.font_m, name, bx, 56, "wood_dk", center=True)
+            if is_store:
+                txt, col = "Press E to enter", "white"
+            elif shop.owned:
+                txt, col = "OWNED", "ui_good"
+            else:
+                txt, col = f"For sale: {money_str(shop.price)}", "ui_gold"
+            img = self.font_s.render(txt, True, C(col))
+            r = img.get_rect(center=(bx, int(8.4 * RT)))
+            bg = pygame.Surface((r.w + 10, r.h + 4), pygame.SRCALPHA)
+            bg.fill((20, 16, 28, 210))
+            sc.blit(bg, (r.x - 5, r.y - 2))
+            sc.blit(img, r)
 
     def _sign(self, cx, cy, line1, line2, c2):
         a = self.font_s.render(line1, True, C("white"))
