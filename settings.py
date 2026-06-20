@@ -140,9 +140,9 @@ UPGRADES = [
      "CCTV over the aisles. Cuts shoplifting losses."),
     ("signage",  "Storefront Signage",500,
      "A bright new sign out front pulls in more foot traffic."),
-    ("see_world","See the World",    750,
-     "Walk out the front door and down the street to buy OTHER shops "
-     "(each pays you daily passive income)."),
+    ("see_world","See the World",    0,
+     "FREE -- walk out the front door and down the street to buy OTHER "
+     "shops (each pays you daily passive income)."),
 ]
 
 # buying an individual extra shelf (placed along the back wall)

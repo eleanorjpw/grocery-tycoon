@@ -296,6 +296,7 @@ class Game:
         self.world = World()
         self.street = Street()
         self.paused = False
+        self.shop_open = True        # when False: no new shoppers come in
         self.players = {0: Player(*SPAWN_TILES[0], pid=0, name="You", color_idx=0)}
         self.local_pid = 0
         self.customers = []
@@ -607,6 +608,16 @@ class Game:
             return
         self._start_new_day()
 
+    def toggle_shop(self):
+        if self.mode == "client":
+            self.client.send({"t": "cmd", "c": "shop"})
+            return
+        self.shop_open = not self.shop_open
+        if self.shop_open:
+            self.toast("Shop OPEN -- shoppers welcome!", "ui_good")
+        else:
+            self.toast("Shop CLOSED -- finishing up, no new shoppers.", "ui_accent")
+
     # --------------------------------------------- store actions (applied) -
     def _apply_order(self, key):
         price = PRODUCT_BY_KEY[key]["wholesale"] * CASE_SIZE * self.cost_mult
@@ -703,6 +714,8 @@ class Game:
         return max(1.0, min(8.0, iv))
 
     def _maybe_spawn(self, dt):
+        if not self.shop_open:
+            return                      # closed: current shoppers finish, no new ones
         if self.game_clock >= CLOSE_HOUR - 0.2:
             return
         self.spawn_timer -= dt
@@ -782,6 +795,7 @@ class Game:
         self.day += 1
         self.game_clock = float(OPEN_HOUR)
         self.day_closed = False
+        self.shop_open = True           # each morning opens fresh
         self.day_revenue = self.day_orders = self.day_shrink = 0.0
         self.day_lost = 0
         self.customers.clear()
@@ -1055,6 +1069,8 @@ class Game:
             self._apply_loan()
         elif c == "advance" and self.phase == PHASE_SUMMARY:
             self._start_new_day()
+        elif c == "shop":
+            self.toggle_shop()
 
     def _snapshot(self):
         return {
@@ -1068,7 +1084,7 @@ class Game:
             "drev": round(self.day_revenue, 1), "dord": round(self.day_orders, 1),
             "dshr": round(self.day_shrink, 1), "dlost": self.day_lost,
             "debt": round(self.debt, 1), "death": self.death_reason,
-            "paused": self.paused,
+            "paused": self.paused, "open": self.shop_open,
             "shops": [s.id for s in self.street.shops if s.owned],
             "players": [{"id": p.pid, "x": round(p.x, 1), "y": round(p.y, 1),
                          "f": p.facing, "c": p.color_idx, "n": p.name,
@@ -1107,6 +1123,7 @@ class Game:
         self.debt = m["debt"]
         self.death_reason = m.get("death")
         self.paused = m.get("paused", False)
+        self.shop_open = m.get("open", True)
         owned = set(m.get("shops", []))
         for shop in self.street.shops:
             shop.owned = shop.id in owned
@@ -1472,7 +1489,9 @@ class Game:
         h12 = hh if 1 <= hh <= 12 else (abs(hh - 12) or 12)
         self._text(sc, self.font_m, f"Day {self.day}", 230, y + 2, "ui_text")
         self._text(sc, self.font_m, f"{h12:02d}:{mm:02d} {ampm}", 230, y + 24,
-                   "ui_accent")
+                   "ui_bad" if not self.shop_open else "ui_accent")
+        if not self.shop_open:
+            self._text(sc, self.font_s, "CLOSED", 312, y + 28, "ui_bad")
         self._bar(sc, 360, y + 2, "Reputation", self.reputation, "ui_good")
         self._bar(sc, 360, y + 26, "Cleanliness", self.cleanliness, "glass")
         sx = 640
@@ -1495,6 +1514,14 @@ class Game:
         elif self.relaxed:
             self._text(sc, self.font_m, "RELAXED", VIEW_W - 16, y + 24,
                        "ui_good", right=True)
+        # open/close shop button (works for everyone; routed through the host)
+        if not self.menu_open:
+            if self._button((VIEW_W - 246, top + 6, 110, 26),
+                            "Open Shop [O]" if not self.shop_open
+                            else "Close Shop [O]",
+                            "ui_good" if not self.shop_open else "ui_panel2",
+                            text_color="black" if not self.shop_open else "ui_text"):
+                self.toggle_shop()
         # pause button (host/single-player only; co-op clients can't pause)
         if self.mode != "client" and not self.menu_open:
             if self._button((VIEW_W - 128, top + 6, 110, 26),
@@ -2213,6 +2240,8 @@ class Game:
                 self.menu_open = not self.menu_open
             elif k == pygame.K_p and self.mode != "client" and not self.menu_open:
                 self.paused = not self.paused
+            elif k == pygame.K_o and not self.menu_open:
+                self.toggle_shop()
             elif k in (pygame.K_SPACE, pygame.K_e) and not self.menu_open \
                     and not self.paused:
                 self.interact_local()
