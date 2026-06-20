@@ -23,3 +23,7 @@ web/
 
 # scratch screenshots
 _*.png
+
+# relay worker
+relay/node_modules/
+relay/.wrangler/

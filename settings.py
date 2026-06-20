@@ -140,7 +140,7 @@ UPGRADES = [
      "CCTV over the aisles. Cuts shoplifting losses."),
     ("signage",  "Storefront Signage",500,
      "A bright new sign out front pulls in more foot traffic."),
-    ("see_world","See the World",    3000,
+    ("see_world","See the World",    750,
      "Walk out the front door and down the street to buy OTHER shops "
      "(each pays you daily passive income)."),
 ]
@@ -150,7 +150,11 @@ SHELF_PRICE = 160
 REPAIR_COST = 80            # cost to fix a broken shelf
 
 # --------------------------------------------------------------- network ------
-NET_PORT = 50007            # TCP port the host listens on
+NET_PORT = 50007            # TCP port the host listens on (legacy direct-IP)
+
+# Cloudflare relay for room-code multiplayer (works in browser + desktop).
+# Filled in after deploying relay/  (wss://<worker>.workers.dev/ws)
+RELAY_URL = "wss://grocery-tycoon-relay.eleanorjpw.workers.dev/ws"
 
 # --------------------------------------------------------------- balance ------
 START_CLEANLINESS = 35

@@ -11,8 +11,10 @@ whole game is just Python.
 
 **▶️ https://grocery-tycoon.pages.dev** — no download, no Python, just click and play.
 
-This is a single-player WebAssembly build hosted on Cloudflare Pages. For
-**co-op multiplayer** with friends, use the downloadable version below.
+A WebAssembly build hosted on Cloudflare Pages. **Co-op works right in the
+browser too** — one person clicks *Host Co-op Game* to get a room code, friends
+open the same link, click *Join with Room Code*, type it in, and you're running
+the store together. No download, no IP addresses (see Multiplayer below).
 
 ## 📨 Send it to friends (one link)
 
@@ -109,60 +111,46 @@ press `E` to **buy it** — each shop you own pays you a **daily passive income*
 press `E` to head back inside. In co-op, friends can come out to the street with
 you and the shops you own stay in sync for everyone.
 
-## Multiplayer (play with friends across devices)
+## Multiplayer (room-code co-op, no download for friends)
+
+Co-op uses **room codes** through a tiny **Cloudflare relay**, so it works the
+same in the **browser** and the **desktop app**, with no IP addresses, no
+port-forwarding, and no Tailscale.
 
 From the title screen:
 
-- **Host Multiplayer** — runs your store and shows your address (`IP:50007`).
-  Hit **Copy Address** to put it on your clipboard and send it to friends, then
-  click **START GAME** when everyone's in the lobby.
-- **Join Multiplayer** — type the host's address (or hit **Paste** / Cmd+V if a
-  friend sent it to you) and connect. The last address you used is remembered
-  for next time. You spawn into their store with a name tag and can help out.
+- **Host Co-op Game** — you become the authoritative host and get a short
+  **room code** (e.g. `MILK`). Hit **Copy Code** to share it, then **START GAME**.
+- **Join with Room Code** — type the host's code (or **Paste**) and hit **Join**.
+  You spawn into their store with a name tag.
+
+The easiest way to play with a friend who has nothing installed:
+1. You open **https://grocery-tycoon.pages.dev** and click **Host Co-op Game**.
+2. Send them the room code.
+3. They open the **same link**, click **Join with Room Code**, type it, and play.
 
 Everyone can walk around and **stock shelves, mop, repair, and run registers**,
-and (since you chose full co-op) anyone can open the **management menu** to
-order stock, hire staff, and buy renovations from the **shared budget**. The
-host's game is authoritative — the day clock and money all live on the host.
+and anyone can open the **management menu** to order stock, hire staff, and buy
+renovations from the **shared budget**. One player's game is authoritative — the
+day clock and money live there; everyone else's inputs and snapshots flow
+through the relay.
 
-### ⚠️ First: your friends need the game on their own device
-Multiplayer is peer-to-peer — each person runs *their own copy* of the game and
-connects to your hosted store. Your friends can't press **Join** until the game
-is on their computer. Get it to them one of three ways:
+### How it works
+- `relay/` is a Cloudflare **Worker + Durable Object** that just forwards
+  messages between everyone in a room (deploy with `cd relay && npx wrangler deploy`).
+- `relay_net.py` is the game-side transport: desktop uses the `websocket-client`
+  library; the browser build uses a tiny JS `WebSocket` shim (`gtnet.js`,
+  injected by `build_web.sh`).
+- The relay URL is `RELAY_URL` in `settings.py`.
 
-1. **Send them the folder (easiest).** Run `./make_share.sh` — it makes a
-   `GroceryTycoon.zip` on your Desktop. Send it (AirDrop, email, Drive…). They
-   unzip and double-click **`Play Grocery Tycoon.command`** (Mac) or
-   **`Play Grocery Tycoon.bat`** (Windows). First launch auto-installs what it
-   needs. They just need **Python 3** (free, usually already on Macs).
-2. **Send them a standalone app (no Python needed).** Run `./build_standalone.sh`
-   to produce `dist/GroceryTycoon.app` (on Mac) / `GroceryTycoon.exe` (on
-   Windows); zip and send it. Note you can only build for the OS you're on, so
-   build on a Mac for Mac friends and on Windows for Windows friends.
-3. **Share the source** (e.g. a GitHub repo) and have them run `python3 main.py`.
+Browsers can't host or use raw TCP sockets, which is why co-op needs the relay
+(a shared server in the middle) rather than peer-to-peer. The legacy direct-IP
+code (`net.py`, `NET_PORT`) is left in the repo but no longer used by the UI.
 
-There's a friend-facing guide, **`FOR_FRIENDS.md`**, included in the zip with
-step-by-step instructions.
-
-### Same WiFi / LAN
-Easiest case. The host clicks *Host Multiplayer* and reads off the
-`192.168.x.x` address shown in the lobby; friends on the same network pick
-*Join Multiplayer* and type it in. Done.
-
-### Across the internet
-A pygame game has no matchmaking server, so a far-away friend needs a path to
-the host. Two common options:
-
-1. **A mesh VPN (easiest, recommended)** — both install a free tool like
-   [Tailscale](https://tailscale.com) or [ZeroTier](https://zerotier.com). They
-   put both machines on one private network; the friend then joins using the
-   host's Tailscale/ZeroTier IP (e.g. `100.x.x.x`) exactly like LAN. No router
-   changes.
-2. **Port-forwarding** — the host forwards TCP port **50007** on their router to
-   their machine, and friends connect to the host's public IP. More fiddly and
-   exposes the port, so option 1 is preferred.
-
-The port is configurable via `NET_PORT` in `settings.py`.
+### Still want to hand friends the desktop app?
+The downloadable version plays co-op through the same room codes. Get it to them
+with `./make_share.sh` (a zip), `./build_standalone.sh` (a no-Python app), or the
+GitHub link. There's a friend guide in **`FOR_FRIENDS.md`**.
 
 ## The real-world challenges (researched, then built in)
 
@@ -197,7 +185,9 @@ Sources that informed the design:
 |---|---|
 | `main.py` | Entry point (self-bootstraps the venv + pygame on first run) |
 | `game.py` | Engine: game loop, simulation, economy, events, HUD, menus, multiplayer |
-| `net.py` | TCP host/client networking (newline-delimited JSON) |
+| `relay_net.py` | Room-code multiplayer transport (desktop + browser WebSocket) |
+| `relay/` | Cloudflare Worker + Durable Object that relays co-op messages |
+| `net.py` | Legacy direct-IP networking (no longer used by the UI) |
 | `street.py` | The street map + buyable shops (the "See the World" upgrade) |
 | `entities.py` | Player, Customers, Staff + BFS pathfinding |
 | `world.py` | Tile map and fixtures (shelves, checkouts, stockroom) |
@@ -222,8 +212,7 @@ npx wrangler login     # one-time, authorize in your browser
 ./deploy_web.sh        # publish to https://grocery-tycoon.pages.dev
 ```
 
-Note: the in-browser build is **single-player only** — browsers can't use the
-game's TCP sockets, so co-op lives in the downloadable desktop version.
+To update the relay: `cd relay && npx wrangler deploy`.
 
 Tip: almost everything is tunable in `settings.py` — prices, wages, upgrade
 costs, store hours and the colour palette.

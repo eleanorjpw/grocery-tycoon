@@ -34,8 +34,8 @@ def _bootstrap():
     print("Installing pygame (one-time, needs internet)...")
     subprocess.run([str(VENV_PY), "-m", "pip", "install", "--quiet",
                     "--upgrade", "pip"])
-    subprocess.run([str(VENV_PY), "-m", "pip", "install", "--quiet", "pygame"],
-                   check=True)
+    subprocess.run([str(VENV_PY), "-m", "pip", "install", "--quiet",
+                    "pygame", "websocket-client"], check=True)
     env = dict(os.environ, GROCERY_BOOTSTRAPPED="1")
     os.execve(str(VENV_PY), [str(VENV_PY), str(ROOT / "main.py")], env)
 

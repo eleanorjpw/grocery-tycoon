@@ -34,12 +34,31 @@ from entities import Customer, Staff
 from street import Street
 
 try:
-    import net                 # networking; absent/disabled in the WASM build
+    import net                 # legacy direct-IP networking (desktop only)
 except Exception:
     net = None
 
+try:
+    import relay_net           # room-code multiplayer via the Cloudflare relay
+except Exception:
+    relay_net = None
+
+from settings import RELAY_URL
+
 # True when running in a browser via pygbag/WASM (no sockets, no subprocess).
 IS_WEB = (sys.platform == "emscripten")
+
+_CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no ambiguous 0/O/1/I/L
+
+
+def gen_room_code(seed, n=4):
+    """Deterministic-but-varied 4-char room code (avoids Math.random in web)."""
+    code = []
+    x = int(seed) & 0xFFFFFFFF
+    for _ in range(n):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        code.append(_CODE_CHARS[x % len(_CODE_CHARS)])
+    return "".join(code)
 
 
 def C(name):
@@ -225,7 +244,13 @@ class Game:
         self.client = None
         self.local_pid = 0
         self.title_mode = "main"   # "main" | "join"
-        self.ip_text = load_last_ip()
+        # join input now holds a room code (alnum); drop any legacy IP value
+        self.ip_text = "".join(c for c in load_last_ip() if c.isalnum())[:6].upper()
+        if self.ip_text.startswith("127"):
+            self.ip_text = ""
+        self.room_code = ""
+        self._net_started = 0
+        self._cli_up = False
         self.status_msg = ""
         self._snap_accum = 0.0
         self._last_intent = None
@@ -825,41 +850,40 @@ class Game:
         self.toasts = [t for t in self.toasts if t["t"] > 0]
 
     # ------------------------------------------------------- networking ---
+    def _relay_ready(self):
+        if relay_net is None or "REPLACE_ME" in RELAY_URL:
+            self.status_msg = "Multiplayer relay isn't set up yet."
+            return False
+        return True
+
     def start_host(self):
+        if not self._relay_ready():
+            return
         self.reset_world()
         self.mode = "host"
-        try:
-            self.server = net.NetServer()
-            self.status_msg = "Hosting. Friends can join your IP below."
-        except OSError as e:
-            self.status_msg = f"Could not host: {e}"
-            self.mode = "local"
-            return
+        self.room_code = gen_room_code(pygame.time.get_ticks() ^ id(self))
+        self.server = relay_net.RelayServer(self.room_code, name="Host")
+        self._net_started = pygame.time.get_ticks()
+        self._cli_up = False
+        self.status_msg = "Room created -- share the code below."
         self.phase = PHASE_LOBBY
 
-    def start_join(self, ip):
-        raw = ip.strip()
-        if not raw:
-            self.status_msg = "Enter the host's IP address first."
+    def start_join(self, code):
+        code = "".join(c for c in code.upper() if c.isalnum())[:6]
+        if not code:
+            self.status_msg = "Enter the room code first."
             return
-        host, port = raw, net.PORT
-        if ":" in raw:
-            host, _, p = raw.partition(":")
-            try:
-                port = int(p)
-            except ValueError:
-                pass
+        if not self._relay_ready():
+            return
         self.reset_world()       # static geometry + caches; sim comes from host
         self.mode = "client"
-        try:
-            self.client = net.NetClient(host, port=port, name="Player")
-            self.status_msg = f"Connecting to {host}..."
-            self.phase = PHASE_LOBBY
-            save_last_ip(raw)
-        except OSError as e:
-            self.status_msg = f"Could not connect: {e}"
-            self.mode = "local"
-            self.phase = PHASE_TITLE
+        self.room_code = code
+        self.client = relay_net.RelayClient(code, name="Player")
+        self._net_started = pygame.time.get_ticks()
+        self._cli_up = False
+        self.status_msg = f"Joining room {code}..."
+        self.phase = PHASE_LOBBY
+        save_last_ip(code)
 
     def start_single(self):
         self.reset_world()
@@ -1009,14 +1033,28 @@ class Game:
 
     def _net_tick(self, dt):
         if self.mode == "host" and self.server:
+            if getattr(self.server, "error", None):
+                self.toast("Room code is already in use -- try again."
+                           if self.server.error == "room_taken"
+                           else "Relay error.", "ui_bad")
+                self.leave_to_title()
+                return
             for cid, msg in self.server.poll():
                 self._host_handle(cid, msg)
             self._snap_accum += dt
             if self._snap_accum >= 0.05:      # ~20 Hz
                 self._snap_accum = 0.0
                 self.server.broadcast(self._snapshot())
+            if self.server.connected:
+                self._cli_up = True
+                if self.status_msg.startswith("Room created"):
+                    self.status_msg = "Room is live -- share the code."
+            elif self._cli_up:
+                self.toast("Lost the relay connection.", "ui_bad")
+                self.leave_to_title()
+            elif pygame.time.get_ticks() - self._net_started > 9000:
+                self.status_msg = "Couldn't reach the relay (check internet)."
         elif self.mode == "client" and self.client:
-            # send our input
             if self.phase == PHASE_PLAY and not self.menu_open:
                 keys = pygame.key.get_pressed()
                 dx = dy = 0
@@ -1034,13 +1072,24 @@ class Game:
                 self.client.send({"t": "input", "dx": dx, "dy": dy})
                 self._last_intent = (dx, dy)
             for msg in self.client.poll():
-                if msg.get("t") == "welcome":
+                t = msg.get("t")
+                if t == "welcome":
                     self.local_pid = msg.get("pid", 0)
                     self.status_msg = "Connected!"
-                elif msg.get("t") == "snap":
+                elif t == "snap":
                     self._apply_snapshot(msg)
-            if not self.client.connected:
-                self.status_msg = "Lost connection to host."
+            if self.client.lost:
+                self.toast("The host closed the room.", "ui_bad")
+                self.leave_to_title()
+            elif self.client.connected:
+                if not self._cli_up:
+                    self.client.send({"t": "hello", "name": "Player"})
+                self._cli_up = True
+            elif self._cli_up:
+                self.toast("Lost connection to host.", "ui_bad")
+                self.leave_to_title()
+            elif pygame.time.get_ticks() - self._net_started > 12000:
+                self.toast("Couldn't reach that room -- check the code.", "ui_bad")
                 self.leave_to_title()
 
     # ----------------------------------------------------------- render ---
@@ -1522,54 +1571,37 @@ class Game:
             if self._button((cx - 160, 200, 320, 52), "Single Player",
                             "ui_good", text_color="black"):
                 self.start_single()
-            if IS_WEB:
-                self._text(sc, self.font_m,
-                           "Playing in your browser.", cx, 290, "ui_text",
-                           center=True)
-                self._text(sc, self.font_s,
-                           "Want co-op with friends? Download the full game --",
-                           cx, 326, "ui_dim", center=True)
-                self._text(sc, self.font_s,
-                           "github.com/eleanorjpw/grocery-tycoon",
-                           cx, 346, "ui_accent", center=True)
-            else:
-                if self._button((cx - 160, 268, 320, 52), "Host Multiplayer",
-                                "ui_gold", text_color="black"):
-                    self.start_host()
-                if self._button((cx - 160, 336, 320, 52), "Join Multiplayer"):
-                    self.title_mode = "join"
-                    self.status_msg = ""
-                self._text(sc, self.font_s,
-                           "Host = run your own store. "
-                           "Join = help a friend's store.",
-                           cx, 410, "ui_dim", center=True)
+            if self._button((cx - 160, 268, 320, 52), "Host Co-op Game",
+                            "ui_gold", text_color="black"):
+                self.start_host()
+            if self._button((cx - 160, 336, 320, 52), "Join with Room Code"):
+                self.title_mode = "join"
+                self.status_msg = ""
+            self._text(sc, self.font_s,
+                       "Co-op works in the browser and the app -- friends join "
+                       "with a room code, no IP or download needed.",
+                       cx, 410, "ui_dim", center=True)
         else:
-            self._text(sc, self.font_m, "Enter the host's IP address:",
+            self._text(sc, self.font_m, "Enter the room code:",
                        cx, 210, "ui_text", center=True)
-            box = pygame.Rect(cx - 200, 246, 400, 46)
+            box = pygame.Rect(cx - 160, 246, 320, 56)
             pygame.draw.rect(sc, C("ui_panel2"), box)
             pygame.draw.rect(sc, C("ui_accent"), box, 2)
-            self._text(sc, self.font_l, self.ip_text + "_", box.centerx,
-                       box.y + 8, "white", center=True)
-            if self._button((cx - 205, 312, 130, 46), "Connect", "ui_good",
+            self._text(sc, self.font_xl, (self.ip_text.upper() or "____"),
+                       box.centerx, box.y + 8, "white", center=True)
+            if self._button((cx - 205, 318, 130, 46), "Join", "ui_good",
                             text_color="black"):
                 self.start_join(self.ip_text)
-            if self._button((cx - 65, 312, 130, 46), "Paste", "ui_gold",
+            if self._button((cx - 65, 318, 130, 46), "Paste", "ui_gold",
                             text_color="black"):
-                pasted = "".join(ch for ch in paste_clip()
-                                 if ch in "0123456789.:")[:21]
+                pasted = "".join(ch for ch in paste_clip() if ch.isalnum())[:6]
                 if pasted:
-                    self.ip_text = pasted
-            if self._button((cx + 75, 312, 130, 46), "Back"):
+                    self.ip_text = pasted.upper()
+            if self._button((cx + 75, 318, 130, 46), "Back"):
                 self.title_mode = "main"
             self._text(sc, self.font_s,
-                       "Tip: have the host hit Copy Address, send it to you, "
-                       "then Paste (or Cmd/Ctrl+V) here.",
-                       cx, 372, "ui_dim", center=True)
-            self._text(sc, self.font_s,
-                       "Same WiFi: host's 192.168.x.x. Far away: see README "
-                       "(Tailscale/port-forward).",
-                       cx, 392, "ui_dim", center=True)
+                       "Ask the host for their 4-letter room code, type it in, "
+                       "and hit Join.", cx, 384, "ui_dim", center=True)
         if self.status_msg:
             self._text(sc, self.font_s, self.status_msg, cx, 440, "ui_accent",
                        center=True)
@@ -1585,20 +1617,25 @@ class Game:
         cx = VIEW_W // 2
         self._text(sc, self.font_xl, "LOBBY", cx, 70, "ui_gold", center=True)
         if self.mode == "host":
-            addr = f"{net.local_ip()}:{net.PORT}"
-            self._text(sc, self.font_m, "Your store address (share with friends):",
-                       cx, 134, "ui_text", center=True)
-            self._text(sc, self.font_l, addr, cx, 162, "ui_accent", center=True)
-            if self._button((cx - 90, 196, 180, 32), "Copy Address", "ui_gold",
+            self._text(sc, self.font_m, "Share this room code with friends:",
+                       cx, 124, "ui_text", center=True)
+            self._text(sc, self.font_xl, self.room_code, cx, 150, "ui_gold",
+                       center=True)
+            if self._button((cx - 90, 200, 180, 32), "Copy Code", "ui_gold",
                             text_color="black"):
-                self.status_msg = ("Address copied! Paste it to your friends."
-                                   if copy_clip(addr) else
-                                   "Couldn't copy -- type it manually.")
+                self.status_msg = ("Code copied -- send it to your friends!"
+                                   if copy_clip(self.room_code) else
+                                   "Copy failed -- just type it out.")
+            self._text(sc, self.font_s,
+                       "They pick 'Join with Room Code' (in the app or at "
+                       "grocery-tycoon.pages.dev) and enter it.",
+                       cx, 240, "ui_dim", center=True)
             if self.status_msg:
-                self._text(sc, self.font_s, self.status_msg, cx, 234, "ui_good",
+                self._text(sc, self.font_s, self.status_msg, cx, 258, "ui_good",
                            center=True)
         else:
-            self._text(sc, self.font_m, self.status_msg or "Connecting...",
+            self._text(sc, self.font_m,
+                       self.status_msg or f"Joining {self.room_code}...",
                        cx, 150, "ui_accent", center=True)
         self._text(sc, self.font_m, "Players in store:", cx, 276, "ui_text",
                    center=True)
@@ -1759,18 +1796,17 @@ class Game:
             if self.title_mode == "join":
                 mods = pygame.key.get_mods()
                 if k == pygame.K_v and (mods & (pygame.KMOD_META | pygame.KMOD_CTRL)):
-                    pasted = "".join(ch for ch in paste_clip()
-                                     if ch in "0123456789.:")[:21]
+                    pasted = "".join(ch for ch in paste_clip() if ch.isalnum())[:6]
                     if pasted:
-                        self.ip_text = pasted
+                        self.ip_text = pasted.upper()
                 elif k == pygame.K_RETURN:
                     self.start_join(self.ip_text)
                 elif k == pygame.K_BACKSPACE:
                     self.ip_text = self.ip_text[:-1]
                 elif k == pygame.K_ESCAPE:
                     self.title_mode = "main"
-                elif e.unicode and e.unicode in "0123456789.:" and len(self.ip_text) < 21:
-                    self.ip_text += e.unicode
+                elif e.unicode and e.unicode.isalnum() and len(self.ip_text) < 6:
+                    self.ip_text += e.unicode.upper()
             elif k == pygame.K_ESCAPE:
                 return False
             return True
