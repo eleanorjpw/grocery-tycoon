@@ -152,6 +152,21 @@ The downloadable version plays co-op through the same room codes. Get it to them
 with `./make_share.sh` (a zip), `./build_standalone.sh` (a no-Python app), or the
 GitHub link. There's a friend guide in **`FOR_FRIENDS.md`**.
 
+## Cloud saves (your account)
+
+Keep multiple named stores on your account and load them from any device or the
+browser:
+
+- On the title screen click **Cloud Saves / Account** → create an account
+  (username + password) or sign in.
+- **+ New Game** names a save slot; while playing, hit **P** (pause) → **Save**.
+- Your slots show up under **Cloud Saves** with **Load** / **Delete**.
+
+Saves live in a Cloudflare **D1** database behind the `saves/` Worker
+(`SAVES_URL` in `settings.py`). Passwords are salted-SHA-256 hashed — casual-grade
+security for a game, so don't reuse an important password. Deploy/update the
+backend with `cd saves && npx wrangler deploy`.
+
 ## The real-world challenges (researched, then built in)
 
 The mechanics are modelled on the actual headaches of running a grocery store:
