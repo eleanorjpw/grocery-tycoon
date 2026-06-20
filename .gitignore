@@ -27,3 +27,5 @@ _*.png
 # relay worker
 relay/node_modules/
 relay/.wrangler/
+saves/.wrangler/
+saves/node_modules/

@@ -9,6 +9,7 @@ Play solo, or HOST a store and let friends JOIN across devices to run it
 together (move around, stock/clean/repair, ring up registers, and co-manage
 the books).
 """
+import json
 import math
 import os
 import random
@@ -43,7 +44,12 @@ try:
 except Exception:
     relay_net = None
 
-from settings import RELAY_URL
+try:
+    import saves_api           # cloud accounts + saves
+except Exception:
+    saves_api = None
+
+from settings import RELAY_URL, OPEN_HOUR
 
 # True when running in a browser via pygbag/WASM (no sockets, no subprocess).
 IS_WEB = (sys.platform == "emscripten")
@@ -255,6 +261,19 @@ class Game:
         self._snap_accum = 0.0
         self._last_intent = None
 
+        # cloud accounts + saves
+        self.api = saves_api.SaveAPI() if saves_api else None
+        self.account = None          # signed-in username
+        self.account_pw = ""
+        self.current_save = None     # active slot name
+        self.save_list = []
+        self.req = None              # (handle, kind) of in-flight request
+        self.field = "user"          # active text field on the account screen
+        self.user_text = ""
+        self.pass_text = ""
+        self.newname_text = ""
+        self.saves_msg = ""
+
         self.reset_world()
         self.phase = PHASE_TITLE
 
@@ -309,6 +328,77 @@ class Game:
     @property
     def me(self):
         return self.players.get(self.local_pid)
+
+    # ----------------------------------------------------- save / restore -
+    def to_state(self):
+        return {
+            "v": 1,
+            "money": round(self.money, 2), "day": self.day,
+            "clock": round(self.game_clock, 3),
+            "rep": round(self.reputation, 2), "clean": round(self.cleanliness, 2),
+            "debt": round(self.debt, 2),
+            "upgrades": sorted(self.upgrades),
+            "backstock": self.backstock, "pending": self.pending,
+            "shelves": [{"c": s.col, "r": s.row, "k": s.product,
+                         "st": s.stock, "bk": s.broken}
+                        for s in self.world.shelves],
+            "dirty": [[c, r] for (c, r) in self.world.dirty],
+            "shops": [s.id for s in self.street.shops if s.owned],
+            "staff": [s.role for s in self.staff],
+            "drev": round(self.day_revenue, 2), "dord": round(self.day_orders, 2),
+            "dshr": round(self.day_shrink, 2), "dlost": self.day_lost,
+        }
+
+    def from_state(self, d):
+        self.reset_world()
+        self.mode = "local"
+        self.money = float(d.get("money", START_MONEY))
+        self.day = int(d.get("day", 1))
+        self.game_clock = float(d.get("clock", OPEN_HOUR))
+        self.reputation = float(d.get("rep", START_REPUTATION))
+        self.cleanliness = float(d.get("clean", START_CLEANLINESS))
+        self.debt = float(d.get("debt", 0.0))
+        self.upgrades = set(d.get("upgrades", []))
+        self.backstock = {p[0]: 0 for p in PRODUCTS}
+        for k, v in d.get("backstock", {}).items():
+            if k in self.backstock:
+                self.backstock[k] = int(v)
+        self.pending = {p[0]: 0 for p in PRODUCTS}
+        for k, v in d.get("pending", {}).items():
+            if k in self.pending:
+                self.pending[k] = int(v)
+        shs = []
+        for sd in d.get("shelves", []):
+            if sd.get("k") not in PRODUCT_BY_KEY:
+                continue
+            sh = Shelf(sd["c"], sd["r"], sd["k"])
+            sh.stock = int(sd.get("st", 0))
+            sh.broken = bool(sd.get("bk", False))
+            sh.access = self.world._nearest_walkable_neighbor(sd["c"], sd["r"])
+            shs.append(sh)
+        if shs:
+            self.world.shelves = shs
+        self.world.dirty = {(c, r): 1 for c, r in d.get("dirty", [])}
+        owned = set(d.get("shops", []))
+        for shop in self.street.shops:
+            shop.owned = shop.id in owned
+        self.staff = []
+        for role in d.get("staff", []):
+            if role not in STAFF_TYPES:
+                continue
+            s = Staff(role, 2, 2)
+            if role == "cashier":
+                free = [ch for ch in self.world.checkouts if ch.cashier is None]
+                if free:
+                    free[0].cashier = s
+                    s.checkout = free[0]
+            self.staff.append(s)
+        self.day_revenue = float(d.get("drev", 0.0))
+        self.day_orders = float(d.get("dord", 0.0))
+        self.day_shrink = float(d.get("dshr", 0.0))
+        self.day_lost = int(d.get("dlost", 0))
+        self.menu_open = self.paused = False
+        self.phase = PHASE_PLAY
 
     def _reset_daily(self):
         self.power_out = False
@@ -1031,6 +1121,71 @@ class Game:
         if m.get("summary"):
             self.summary = m["summary"]
 
+    # ------------------------------------------------------ cloud saves --
+    def _creds(self):
+        return {"username": self.account or self.user_text,
+                "password": self.account_pw or self.pass_text}
+
+    def _begin(self, kind, path, payload):
+        if not self.api or self.req:
+            return
+        self.req = (self.api.request(path, payload), kind)
+
+    def _refresh_saves(self):
+        self._begin("list", "/list", self._creds())
+
+    def _poll_request(self):
+        if not self.req:
+            return
+        handle, kind = self.req
+        r = self.api.poll(handle)
+        if r is None:
+            return
+        self.req = None
+        self._on_response(kind, r)
+
+    def _on_response(self, kind, r):
+        if r[0] == "err":
+            self.saves_msg = r[1]
+            return
+        obj = r[1] if isinstance(r[1], dict) else {}
+        if obj.get("error"):
+            self.saves_msg = obj["error"]
+            return
+        if kind in ("login", "register"):
+            self.account = obj.get("username", self.user_text)
+            self.account_pw = self.pass_text
+            self.pass_text = ""
+            self.saves_msg = f"Signed in as {self.account}."
+            self.title_mode = "saves"
+            self._refresh_saves()
+        elif kind == "list":
+            self.save_list = obj.get("saves", [])
+        elif kind == "save":
+            self.saves_msg = "Saved!"
+            self.toast("Game saved to your account.", "ui_good")
+        elif kind == "load":
+            try:
+                self.from_state(json.loads(obj.get("data", "{}")))
+                self.current_save = obj.get("name")
+                self.toast(f"Loaded '{self.current_save}'.", "ui_good")
+            except Exception:
+                self.saves_msg = "That save looks corrupted."
+        elif kind == "delete":
+            self.saves_msg = "Save deleted."
+            self._refresh_saves()
+
+    def cloud_save(self):
+        if not self.account:
+            self.toast("Sign in from the title screen to save.", "ui_bad")
+            return
+        if not self.current_save:
+            self.current_save = "My Store"
+        self._begin("save", "/save",
+                    {**self._creds(), "name": self.current_save,
+                     "data": json.dumps(self.to_state())})
+        self.toast("Saving...", "ui_dim")
+
     def _net_tick(self, dt):
         if self.mode == "host" and self.server:
             if getattr(self.server, "error", None):
@@ -1344,9 +1499,21 @@ class Game:
         else:
             self._text(sc, self.font_m, "The store is frozen.", VIEW_W // 2,
                        VIEW_H // 2 - 14, "ui_text", center=True)
-            if self._button((VIEW_W // 2 - 110, VIEW_H // 2 + 30, 220, 46),
+            if self._button((VIEW_W // 2 - 110, VIEW_H // 2 + 24, 220, 44),
                             "Resume", "ui_good", text_color="black"):
                 self.paused = False
+            if self.mode == "local":
+                if self.account:
+                    slot = self.current_save or "My Store"
+                    if self._button((VIEW_W // 2 - 110, VIEW_H // 2 + 76, 220, 44),
+                                    f"Save to '{slot}'", "ui_gold",
+                                    text_color="black"):
+                        self.cloud_save()
+                else:
+                    self._text(sc, self.font_s,
+                               "Sign in on the title screen to save to the cloud.",
+                               VIEW_W // 2, VIEW_H // 2 + 86, "ui_dim",
+                               center=True)
 
     def _bar(self, sc, x, y, label, val, color):
         self._text(sc, self.font_s, label, x, y, "ui_dim")
@@ -1561,52 +1728,173 @@ class Game:
         shade = pygame.Surface((VIEW_W, VIEW_H), pygame.SRCALPHA)
         shade.fill((10, 8, 18, 210))
         sc.blit(shade, (0, 0))
-        self._text(sc, self.font_xl, "GROCERY TYCOON", VIEW_W // 2, 80,
-                   "ui_gold", center=True)
-        self._text(sc, self.font_m,
-                   "Fix up a run-down store -- solo or with friends.",
-                   VIEW_W // 2, 134, "ui_text", center=True)
+        if self.title_mode in ("main", "join"):
+            self._text(sc, self.font_xl, "GROCERY TYCOON", VIEW_W // 2, 80,
+                       "ui_gold", center=True)
+            self._text(sc, self.font_m,
+                       "Fix up a run-down store -- solo or with friends.",
+                       VIEW_W // 2, 134, "ui_text", center=True)
         cx = VIEW_W // 2
-        if self.title_mode == "main":
-            if self._button((cx - 160, 200, 320, 52), "Single Player",
-                            "ui_good", text_color="black"):
-                self.start_single()
-            if self._button((cx - 160, 268, 320, 52), "Host Co-op Game",
-                            "ui_gold", text_color="black"):
-                self.start_host()
-            if self._button((cx - 160, 336, 320, 52), "Join with Room Code"):
-                self.title_mode = "join"
-                self.status_msg = ""
-            self._text(sc, self.font_s,
-                       "Co-op works in the browser and the app -- friends join "
-                       "with a room code, no IP or download needed.",
-                       cx, 410, "ui_dim", center=True)
-        else:
-            self._text(sc, self.font_m, "Enter the room code:",
-                       cx, 210, "ui_text", center=True)
-            box = pygame.Rect(cx - 160, 246, 320, 56)
-            pygame.draw.rect(sc, C("ui_panel2"), box)
-            pygame.draw.rect(sc, C("ui_accent"), box, 2)
-            self._text(sc, self.font_xl, (self.ip_text.upper() or "____"),
-                       box.centerx, box.y + 8, "white", center=True)
-            if self._button((cx - 205, 318, 130, 46), "Join", "ui_good",
-                            text_color="black"):
-                self.start_join(self.ip_text)
-            if self._button((cx - 65, 318, 130, 46), "Paste", "ui_gold",
-                            text_color="black"):
-                pasted = "".join(ch for ch in paste_clip() if ch.isalnum())[:6]
-                if pasted:
-                    self.ip_text = pasted.upper()
-            if self._button((cx + 75, 318, 130, 46), "Back"):
-                self.title_mode = "main"
-            self._text(sc, self.font_s,
-                       "Ask the host for their 4-letter room code, type it in, "
-                       "and hit Join.", cx, 384, "ui_dim", center=True)
-        if self.status_msg:
-            self._text(sc, self.font_s, self.status_msg, cx, 440, "ui_accent",
+        {"main": self._title_main, "join": self._title_join,
+         "account": self._title_account, "saves": self._title_saves,
+         "newgame": self._title_newgame}.get(
+            self.title_mode, self._title_main)(cx)
+        if self.title_mode in ("main", "join") and self.status_msg:
+            self._text(sc, self.font_s, self.status_msg, cx, 446, "ui_accent",
                        center=True)
-        self._text(sc, self.font_s, "Esc to quit", cx, VIEW_H - 40, "ui_dim",
+        self._text(sc, self.font_s, "Esc to quit", cx, VIEW_H - 36, "ui_dim",
                    center=True)
+
+    def _title_main(self, cx):
+        sc = self.screen
+        if self._button((cx - 160, 186, 320, 48), "Single Player",
+                        "ui_good", text_color="black"):
+            self.start_single()
+        if self._button((cx - 160, 242, 320, 48), "Host Co-op Game",
+                        "ui_gold", text_color="black"):
+            self.start_host()
+        if self._button((cx - 160, 298, 320, 48), "Join with Room Code"):
+            self.title_mode = "join"
+            self.status_msg = ""
+        label = f"Cloud Saves  ({self.account})" if self.account \
+            else "Cloud Saves / Account"
+        if self._button((cx - 160, 354, 320, 48), label, "ui_panel2"):
+            self.saves_msg = ""
+            if self.account:
+                self.title_mode = "saves"
+                self._refresh_saves()
+            else:
+                self.title_mode = "account"
+        self._text(sc, self.font_s,
+                   "Co-op: friends join by room code (browser or app).  "
+                   "Cloud Saves: keep your stores on your account.",
+                   cx, 418, "ui_dim", center=True)
+
+    def _title_join(self, cx):
+        sc = self.screen
+        self._text(sc, self.font_m, "Enter the room code:", cx, 210, "ui_text",
+                   center=True)
+        box = pygame.Rect(cx - 160, 246, 320, 56)
+        pygame.draw.rect(sc, C("ui_panel2"), box)
+        pygame.draw.rect(sc, C("ui_accent"), box, 2)
+        self._text(sc, self.font_xl, (self.ip_text.upper() or "____"),
+                   box.centerx, box.y + 8, "white", center=True)
+        if self._button((cx - 205, 318, 130, 46), "Join", "ui_good",
+                        text_color="black"):
+            self.start_join(self.ip_text)
+        if self._button((cx - 65, 318, 130, 46), "Paste", "ui_gold",
+                        text_color="black"):
+            pasted = "".join(ch for ch in paste_clip() if ch.isalnum())[:6]
+            if pasted:
+                self.ip_text = pasted.upper()
+        if self._button((cx + 75, 318, 130, 46), "Back"):
+            self.title_mode = "main"
+        self._text(sc, self.font_s,
+                   "Ask the host for their room code, type it in, and hit Join.",
+                   cx, 384, "ui_dim", center=True)
+
+    def _field(self, cx, y, label, value, key):
+        sc = self.screen
+        active = self.field == key
+        box = pygame.Rect(cx - 150, y, 300, 44)
+        pygame.draw.rect(sc, C("ui_panel2"), box)
+        pygame.draw.rect(sc, C("ui_accent") if active else C("ui_border"), box, 2)
+        self._text(sc, self.font_s, label, box.x - 60, y + 12, "ui_dim")
+        self._text(sc, self.font_m, value + ("_" if active else ""),
+                   box.x + 10, y + 11, "white")
+        if self.click_pos and box.collidepoint(self.click_pos):
+            self.field = key
+
+    def _title_account(self, cx):
+        sc = self.screen
+        self._text(sc, self.font_l, "Sign In", cx, 150, "ui_gold", center=True)
+        self._field(cx, 200, "User", self.user_text, "user")
+        self._field(cx, 258, "Pass", "*" * len(self.pass_text), "pass")
+        busy = self.req is not None
+        if self._button((cx - 205, 322, 130, 46), "Sign In", "ui_good",
+                        enabled=not busy, text_color="black"):
+            self._begin("login", "/login",
+                        {"username": self.user_text, "password": self.pass_text})
+            self.saves_msg = "Signing in..."
+        if self._button((cx - 65, 322, 130, 46), "Create", "ui_gold",
+                        enabled=not busy, text_color="black"):
+            self._begin("register", "/register",
+                        {"username": self.user_text, "password": self.pass_text})
+            self.saves_msg = "Creating account..."
+        if self._button((cx + 75, 322, 130, 46), "Back"):
+            self.title_mode = "main"
+            self.saves_msg = ""
+        self._text(sc, self.font_s,
+                   "Click a field to type (Tab switches). New? Pick a name + "
+                   "password and hit Create. Casual security -- don't reuse a "
+                   "real password.", cx, 384, "ui_dim", center=True)
+        if self.saves_msg:
+            self._text(sc, self.font_s, self.saves_msg, cx, 414, "ui_accent",
+                       center=True)
+
+    def _title_saves(self, cx):
+        sc = self.screen
+        self._text(sc, self.font_l, f"Cloud Saves -- {self.account}", cx, 100,
+                   "ui_gold", center=True)
+        busy = self.req is not None
+        if busy:
+            self._text(sc, self.font_s, "working...", cx, 132, "ui_dim",
+                       center=True)
+        y = 160
+        if not self.save_list and not busy:
+            self._text(sc, self.font_s,
+                       "No saves yet -- start a New Game, then Save (P) while "
+                       "playing.", cx, y, "ui_dim", center=True)
+            y += 28
+        for s in self.save_list[:7]:
+            name = s.get("name", "?")
+            row = pygame.Rect(cx - 260, y, 520, 40)
+            pygame.draw.rect(sc, C("ui_panel2"), row)
+            pygame.draw.rect(sc, C("ui_border"), row, 1)
+            self._text(sc, self.font_m, name, row.x + 12, row.y + 10, "ui_text")
+            if self._button((row.right - 198, row.y + 5, 90, 30), "Load",
+                            "ui_good", enabled=not busy, text_color="black"):
+                self._begin("load", "/load", {**self._creds(), "name": name})
+                self.saves_msg = "Loading..."
+            if self._button((row.right - 100, row.y + 5, 90, 30), "Delete",
+                            "ui_panel2", enabled=not busy):
+                self._begin("delete", "/delete", {**self._creds(), "name": name})
+            y += 46
+        y = max(y, 430)
+        if self._button((cx - 260, y, 165, 40), "+ New Game", "ui_gold",
+                        text_color="black"):
+            self.newname_text = ""
+            self.title_mode = "newgame"
+            self.saves_msg = ""
+        if self._button((cx - 82, y, 160, 40), "Sign Out"):
+            self.account = None
+            self.account_pw = ""
+            self.save_list = []
+            self.title_mode = "main"
+        if self._button((cx + 95, y, 160, 40), "Back"):
+            self.title_mode = "main"
+        if self.saves_msg:
+            self._text(sc, self.font_s, self.saves_msg, cx, VIEW_H - 66,
+                       "ui_accent", center=True)
+
+    def _title_newgame(self, cx):
+        sc = self.screen
+        self._text(sc, self.font_l, "Name your store", cx, 190, "ui_gold",
+                   center=True)
+        box = pygame.Rect(cx - 200, 240, 400, 50)
+        pygame.draw.rect(sc, C("ui_panel2"), box)
+        pygame.draw.rect(sc, C("ui_accent"), box, 2)
+        self._text(sc, self.font_m, (self.newname_text or "My Store") + "_",
+                   box.x + 12, box.y + 14, "white")
+        if self._button((cx - 160, 310, 150, 46), "Create", "ui_good",
+                        text_color="black"):
+            self.current_save = self.newname_text.strip() or "My Store"
+            self.start_single()
+        if self._button((cx + 10, 310, 150, 46), "Back"):
+            self.title_mode = "saves"
+        self._text(sc, self.font_s,
+                   "This is your save slot. Save anytime from the pause menu (P).",
+                   cx, 372, "ui_dim", center=True)
 
     def _draw_lobby(self):
         self._draw_world_scaled()
@@ -1807,6 +2095,41 @@ class Game:
                     self.title_mode = "main"
                 elif e.unicode and e.unicode.isalnum() and len(self.ip_text) < 6:
                     self.ip_text += e.unicode.upper()
+            elif self.title_mode == "account":
+                if k == pygame.K_TAB:
+                    self.field = "pass" if self.field == "user" else "user"
+                elif k == pygame.K_RETURN:
+                    self._begin("login", "/login", {"username": self.user_text,
+                                "password": self.pass_text})
+                    self.saves_msg = "Signing in..."
+                elif k == pygame.K_ESCAPE:
+                    self.title_mode = "main"
+                elif k == pygame.K_BACKSPACE:
+                    if self.field == "user":
+                        self.user_text = self.user_text[:-1]
+                    else:
+                        self.pass_text = self.pass_text[:-1]
+                elif e.unicode and e.unicode.isprintable():
+                    if self.field == "user":
+                        if (e.unicode.isalnum() or e.unicode == "_") \
+                                and len(self.user_text) < 20:
+                            self.user_text += e.unicode.lower()
+                    elif len(self.pass_text) < 40:
+                        self.pass_text += e.unicode
+            elif self.title_mode == "newgame":
+                if k == pygame.K_RETURN:
+                    self.current_save = self.newname_text.strip() or "My Store"
+                    self.start_single()
+                elif k == pygame.K_ESCAPE:
+                    self.title_mode = "saves"
+                elif k == pygame.K_BACKSPACE:
+                    self.newname_text = self.newname_text[:-1]
+                elif e.unicode and e.unicode.isprintable() \
+                        and e.unicode not in '"\\' and len(self.newname_text) < 24:
+                    self.newname_text += e.unicode
+            elif self.title_mode == "saves":
+                if k == pygame.K_ESCAPE:
+                    self.title_mode = "main"
             elif k == pygame.K_ESCAPE:
                 return False
             return True
@@ -1847,6 +2170,7 @@ class Game:
             dt = min(self.clock.tick(FPS) / 1000.0, 0.05)
             running = self.handle_events()
             self._net_tick(dt)
+            self._poll_request()
             self.update(dt)
             self.draw()
         self._teardown_net()

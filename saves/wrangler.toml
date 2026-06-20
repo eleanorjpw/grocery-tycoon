@@ -1,0 +1,8 @@
+name = "grocery-tycoon-saves"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "grocery-tycoon-db"
+database_id = "aa94a0e6-74e4-42df-a77d-39fd74e58651"

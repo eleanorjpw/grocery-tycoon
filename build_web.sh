@@ -13,7 +13,8 @@ echo "Installing pygbag (pinned to match the vendored runtime wheel)..."
 # Stage only the files the web build needs (no net.py, no tests, no venv).
 STAGE="$(mktemp -d)/grocerytycoon"
 mkdir -p "$STAGE"
-cp settings.py art.py world.py entities.py street.py game.py relay_net.py "$STAGE/"
+cp settings.py art.py world.py entities.py street.py game.py relay_net.py \
+   saves_api.py "$STAGE/"
 cp web_main.py "$STAGE/main.py"
 
 echo "Building WASM bundle..."
@@ -53,16 +54,29 @@ window.GTNet = {
   close:function(){ try{ if(this.ws) this.ws.close(); }catch(e){} this.open=false; }
 };
 JS
-# load the shim before the game starts
+# cloud-save fetch shim (relay_net uses GTNet; saves_api uses GTSave)
+cat > web/gtsave.js <<'JS'
+window.GTSave = {
+  results:{}, n:0,
+  request:function(url, body){ var id=++this.n; var self=this; this.results[id]="PENDING";
+    fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:body})
+      .then(function(r){return r.text();})
+      .then(function(t){ self.results[id]="OK"+t; })
+      .catch(function(e){ self.results[id]="ERR"+((e&&e.message)?e.message:"network"); });
+    return id; },
+  get:function(id){ var r=this.results[id]; if(r&&r!=="PENDING"){ delete this.results[id]; return r; } return ""; }
+};
+JS
+# load both shims before the game starts
 python3 - web/index.html <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
-tag = '<script src="gtnet.js"></script>'
-if tag not in s:
+tags = '<script src="gtnet.js"></script>\n<script src="gtsave.js"></script>'
+if "gtnet.js" not in s:
     if "</head>" in s:
-        s = s.replace("</head>", tag + "\n</head>", 1)
+        s = s.replace("</head>", tags + "\n</head>", 1)
     else:
-        s = s.replace("<body", tag + "\n<body", 1)
+        s = s.replace("<body", tags + "\n<body", 1)
     open(p, "w").write(s)
 PY
 

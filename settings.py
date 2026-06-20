@@ -156,6 +156,9 @@ NET_PORT = 50007            # TCP port the host listens on (legacy direct-IP)
 # Filled in after deploying relay/  (wss://<worker>.workers.dev/ws)
 RELAY_URL = "wss://grocery-tycoon-relay.eleanorjpw.workers.dev/ws"
 
+# Cloudflare account + cloud-save backend (saves/).
+SAVES_URL = "https://grocery-tycoon-saves.eleanorjpw.workers.dev"
+
 # --------------------------------------------------------------- balance ------
 START_CLEANLINESS = 35
 START_REPUTATION = 30
