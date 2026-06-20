@@ -257,6 +257,7 @@ class Game:
         self.room_code = ""
         self._net_started = 0
         self._cli_up = False
+        self.relaxed = False         # less-stressful mode (set before a game)
         self.status_msg = ""
         self._snap_accum = 0.0
         self._last_intent = None
@@ -299,7 +300,7 @@ class Game:
         self.local_pid = 0
         self.customers = []
         self.staff = []
-        self.money = START_MONEY
+        self.money = START_MONEY + (300 if self.relaxed else 0)
         self.day = 1
         self.game_clock = float(OPEN_HOUR)
         self.reputation = START_REPUTATION
@@ -332,7 +333,7 @@ class Game:
     # ----------------------------------------------------- save / restore -
     def to_state(self):
         return {
-            "v": 1,
+            "v": 1, "relaxed": self.relaxed,
             "money": round(self.money, 2), "day": self.day,
             "clock": round(self.game_clock, 3),
             "rep": round(self.reputation, 2), "clean": round(self.cleanliness, 2),
@@ -352,6 +353,7 @@ class Game:
     def from_state(self, d):
         self.reset_world()
         self.mode = "local"
+        self.relaxed = bool(d.get("relaxed", False))
         self.money = float(d.get("money", START_MONEY))
         self.day = int(d.get("day", 1))
         self.game_clock = float(d.get("clock", OPEN_HOUR))
@@ -418,6 +420,8 @@ class Game:
             ch *= 0.5
         if self.shoplift_wave:
             ch *= 2.5
+        if self.relaxed:
+            ch *= 0.2
         return min(0.5, ch)
 
     def on_sale(self, cust):
@@ -704,12 +708,15 @@ class Game:
         self.spawn_timer -= dt
         if self.spawn_timer <= 0 and len(self.customers) < 16:
             self.spawn_timer = self._spawn_interval()
-            self.customers.append(
-                Customer(self.world, random.randrange(len(self.cust_spr))))
+            cust = Customer(self.world, random.randrange(len(self.cust_spr)))
+            if self.relaxed:
+                cust.patience *= 1.8   # shoppers wait far longer before leaving
+            self.customers.append(cust)
 
     # ------------------------------------------------------- day cycle ----
     def _advance_clock(self, dt):
-        self.game_clock += dt / SECONDS_PER_HOUR
+        per_hour = SECONDS_PER_HOUR * (1.9 if self.relaxed else 1.0)
+        self.game_clock += dt / per_hour
         if self.game_clock >= CLOSE_HOUR and not self.day_closed:
             self.day_closed = True
             self._end_day()
@@ -717,15 +724,16 @@ class Game:
     def _end_day(self):
         fridge = "fridge" in self.upgrades
         spoiled = 0
+        spoil_mult = 0.4 if self.relaxed else 1.0
         for sh in self.world.shelves:
             if sh.perishable and sh.stock > 0:
-                rate = 0.6 if self.power_out else (0.10 if fridge else 0.40)
+                rate = (0.6 if self.power_out else (0.10 if fridge else 0.40)) * spoil_mult
                 lose = int(sh.stock * rate)
                 sh.stock -= lose
                 spoiled += lose
         for key in list(self.backstock):
             if PRODUCT_BY_KEY[key]["perishable"] and self.backstock[key] > 0:
-                rate = 0.4 if self.power_out else (0.05 if fridge else 0.20)
+                rate = (0.4 if self.power_out else (0.05 if fridge else 0.20)) * spoil_mult
                 lose = int(self.backstock[key] * rate)
                 self.backstock[key] -= lose
                 spoiled += lose
@@ -764,7 +772,7 @@ class Game:
             "net": self.day_revenue + shop_income - wages - utilities
                    - self.extra_cost - self.day_orders,
         }
-        if self.money < -500:
+        if self.money < -500 and not self.relaxed:
             self.death_reason = "bankrupt"
             self.phase = PHASE_OVER
         else:
@@ -801,6 +809,9 @@ class Game:
         ]
         if self.day <= 2:
             pool = [p for p in pool if p[0] in ("calm", "rush")]
+        elif self.relaxed:
+            # no power outages, theft waves, supply chaos, breakdowns, etc.
+            pool = [p for p in pool if p[0] in ("calm", "rush", "inspect")]
         ev = random.choices([p[0] for p in pool],
                             weights=[p[1] for p in pool])[0]
         self.event_label = next(p[2] for p in pool if p[0] == ev)
@@ -919,7 +930,8 @@ class Game:
         self._process_checkouts(dt)
 
         # the store dies if there is nothing left to sell anywhere
-        if self._total_stock() <= 0:
+        # (disabled in relaxed mode -- less stressful)
+        if self._total_stock() <= 0 and not self.relaxed:
             self.death_reason = "out_of_stock"
             self.phase = PHASE_OVER
             return
@@ -928,6 +940,8 @@ class Game:
         if self.dirt_timer <= 0:
             self.dirt_timer = (4.0 if "floor" not in self.upgrades else 8.0) \
                 + random.uniform(0, 3)
+            if self.relaxed:
+                self.dirt_timer *= 1.8
             if len(self.world.dirty) < 40 and self.customers:
                 self._add_dirt_near(random.choice(self.customers).w.col,
                                     random.choice(self.customers).w.row)
@@ -1478,6 +1492,9 @@ class Game:
                        f"{'HOST' if self.mode == 'host' else 'CO-OP'}: "
                        f"{len(self.players)}P", VIEW_W - 16, y + 24,
                        "ui_accent", right=True)
+        elif self.relaxed:
+            self._text(sc, self.font_m, "RELAXED", VIEW_W - 16, y + 24,
+                       "ui_good", right=True)
         # pause button (host/single-player only; co-op clients can't pause)
         if self.mode != "client" and not self.menu_open:
             if self._button((VIEW_W - 128, top + 6, 110, 26),
@@ -1768,7 +1785,16 @@ class Game:
         self._text(sc, self.font_s,
                    "Co-op: friends join by room code (browser or app).  "
                    "Cloud Saves: keep your stores on your account.",
-                   cx, 418, "ui_dim", center=True)
+                   cx, 416, "ui_dim", center=True)
+        on = self.relaxed
+        if self._button((cx - 160, 446, 320, 36),
+                        f"Relaxed Mode:  {'ON' if on else 'OFF'}",
+                        "ui_good" if on else "ui_panel2",
+                        text_color="black" if on else "ui_text"):
+            self.relaxed = not self.relaxed
+        self._text(sc, self.font_s,
+                   "Slower days, gentle events, patient shoppers, no game-over "
+                   "-- just chill and build.", cx, 490, "ui_dim", center=True)
 
     def _title_join(self, cx):
         sc = self.screen
