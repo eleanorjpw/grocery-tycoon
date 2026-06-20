@@ -1823,40 +1823,72 @@ class Game:
         sc = self.screen
         active = self.field == key
         box = pygame.Rect(cx - 150, y, 300, 44)
+        # label above the box, highlighted when the field is active
+        self._text(sc, self.font_m, label + ("  <-- typing here" if active else ""),
+                   box.x, y - 22, "ui_accent" if active else "ui_dim")
         pygame.draw.rect(sc, C("ui_panel2"), box)
-        pygame.draw.rect(sc, C("ui_accent") if active else C("ui_border"), box, 2)
-        self._text(sc, self.font_s, label, box.x - 60, y + 12, "ui_dim")
-        self._text(sc, self.font_m, value + ("_" if active else ""),
+        pygame.draw.rect(sc, C("ui_accent") if active else C("ui_border"), box,
+                         3 if active else 1)
+        shown = value if value else ("" if not active else "")
+        self._text(sc, self.font_m, shown + ("_" if active else ""),
                    box.x + 10, y + 11, "white")
         if self.click_pos and box.collidepoint(self.click_pos):
             self.field = key
 
+    def _account_submit(self, register):
+        if self.req:
+            return
+        u = self.user_text.strip()
+        p = self.pass_text
+        if len(u) < 3:
+            self.saves_msg = "Username needs 3+ letters or numbers."
+            self.field = "user"
+            return
+        if len(p) < 4:
+            self.saves_msg = "Password needs 4+ characters."
+            self.field = "pass"
+            return
+        kind = "register" if register else "login"
+        self._begin(kind, "/" + kind, {"username": u, "password": p})
+        self.saves_msg = "Creating account..." if register else "Signing in..."
+
     def _title_account(self, cx):
         sc = self.screen
-        self._text(sc, self.font_l, "Sign In", cx, 150, "ui_gold", center=True)
-        self._field(cx, 200, "User", self.user_text, "user")
-        self._field(cx, 258, "Pass", "*" * len(self.pass_text), "pass")
+        self._text(sc, self.font_l, "Sign In  /  Create Account", cx, 96,
+                   "ui_gold", center=True)
+        self._text(sc, self.font_s,
+                   "New here? Fill in both boxes, then press Create.", cx, 130,
+                   "ui_text", center=True)
+        self._field(cx, 178, "Username", self.user_text, "user")
+        uok = len(self.user_text.strip()) >= 3
+        self._text(sc, self.font_s,
+                   ("[ok] " if uok else "*  ") + "at least 3 letters, numbers, or _",
+                   cx - 150, 224, "ui_good" if uok else "ui_dim")
+        self._field(cx, 274, "Password", "*" * len(self.pass_text), "pass")
+        pok = len(self.pass_text) >= 4
+        self._text(sc, self.font_s,
+                   ("[ok] " if pok else "*  ") + "at least 4 characters "
+                   f"({len(self.pass_text)} typed)",
+                   cx - 150, 320, "ui_good" if pok else "ui_dim")
         busy = self.req is not None
-        if self._button((cx - 205, 322, 130, 46), "Sign In", "ui_good",
+        if self._button((cx - 205, 356, 130, 46), "Sign In", "ui_good",
                         enabled=not busy, text_color="black"):
-            self._begin("login", "/login",
-                        {"username": self.user_text, "password": self.pass_text})
-            self.saves_msg = "Signing in..."
-        if self._button((cx - 65, 322, 130, 46), "Create", "ui_gold",
+            self._account_submit(False)
+        if self._button((cx - 65, 356, 130, 46), "Create", "ui_gold",
                         enabled=not busy, text_color="black"):
-            self._begin("register", "/register",
-                        {"username": self.user_text, "password": self.pass_text})
-            self.saves_msg = "Creating account..."
-        if self._button((cx + 75, 322, 130, 46), "Back"):
+            self._account_submit(True)
+        if self._button((cx + 75, 356, 130, 46), "Back"):
             self.title_mode = "main"
             self.saves_msg = ""
         self._text(sc, self.font_s,
-                   "Click a field to type (Tab switches). New? Pick a name + "
-                   "password and hit Create. Casual security -- don't reuse a "
-                   "real password.", cx, 384, "ui_dim", center=True)
+                   "Click a box (or press Tab) to choose which one you're typing "
+                   "in.  Casual security -- don't reuse a real password.",
+                   cx, 416, "ui_dim", center=True)
         if self.saves_msg:
-            self._text(sc, self.font_s, self.saves_msg, cx, 414, "ui_accent",
-                       center=True)
+            bad = any(w in self.saves_msg.lower()
+                      for w in ("need", "wrong", "taken", "reach", "error"))
+            self._text(sc, self.font_m, self.saves_msg, cx, 442,
+                       "ui_bad" if bad else "ui_good", center=True)
 
     def _title_saves(self, cx):
         sc = self.screen
@@ -2125,9 +2157,10 @@ class Game:
                 if k == pygame.K_TAB:
                     self.field = "pass" if self.field == "user" else "user"
                 elif k == pygame.K_RETURN:
-                    self._begin("login", "/login", {"username": self.user_text,
-                                "password": self.pass_text})
-                    self.saves_msg = "Signing in..."
+                    if self.field == "user":
+                        self.field = "pass"      # advance to the password box
+                    else:
+                        self._account_submit(False)
                 elif k == pygame.K_ESCAPE:
                     self.title_mode = "main"
                 elif k == pygame.K_BACKSPACE:
