@@ -150,12 +150,27 @@ SHELF_PRICE = 160
 REPAIR_COST = 80            # cost to fix a broken shelf
 
 # --------------------------------------------------------------- cafe ---------
-CAFE_FOODS = ["coffee", "sandwich", "cake", "salad", "muffin", "soup"]
-CAFE_START_SUPPLIES = 12
-CAFE_SUPPLY_BATCH = 10
-CAFE_SUPPLY_COST = 45       # pay this for a batch of ingredients
-CAFE_MEAL_BASE = 12.0       # what a guest pays for a meal
-CAFE_MEAL_TIP = 8.0         # extra tip, scaled by how fast you served them
+# each dish: prep seconds (cook time) and price the guest pays
+CAFE_FOODS = {
+    "coffee":   {"name": "Coffee",   "color": "wood_dk", "prep": 2.2, "price": 6.0},
+    "muffin":   {"name": "Muffin",   "color": "orange",  "prep": 2.6, "price": 7.0},
+    "sandwich": {"name": "Sandwich", "color": "wood_lt", "prep": 3.8, "price": 11.0},
+    "salad":    {"name": "Salad",    "color": "green",   "prep": 3.8, "price": 10.0},
+    "soup":     {"name": "Soup",     "color": "red_dk",  "prep": 4.6, "price": 12.0},
+    "cake":     {"name": "Cake",     "color": "purple",  "prep": 5.6, "price": 16.0},
+}
+CAFE_START_SUPPLIES = 14
+CAFE_SUPPLY_BATCH = 12
+CAFE_SUPPLY_COST = 40       # pay this for a batch of ingredients
+CAFE_TIP = 6.0             # max tip on top of the price, scaled by serve speed
+
+# one-time cafe upgrades (id, name, cost, description)
+CAFE_UPGRADES = [
+    ("patio",   "Bigger Patio",  1200, "Add 4 more tables for more guests."),
+    ("kitchen", "Pro Kitchen",    900, "Dishes cook about 40% faster."),
+    ("decor",   "Cozy Decor",     700, "Guests are more patient and tip better."),
+    ("menu",    "Gourmet Menu",  1500, "Fancier dishes -- guests pay 25% more."),
+]
 
 # --------------------------------------------------------------- network ------
 NET_PORT = 50007            # TCP port the host listens on (legacy direct-IP)

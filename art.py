@@ -408,13 +408,13 @@ def coffee_machine():
     return s
 
 
-def food_icon():
+def food_icon(color="orange"):
     s = _surf()
-    px(s, "metal_lt", 2, 9, 12, 2)       # plate
-    px(s, "white", 3, 7, 10, 3)
-    px(s, "orange", 5, 4, 6, 4)          # food
-    px(s, "red", 6, 3, 3, 2)
-    px(s, "green", 9, 5, 2, 2)
+    px(s, "metal_lt", 2, 9, 12, 2)       # plate rim
+    px(s, "white", 3, 7, 10, 3)          # plate
+    px(s, color, 5, 4, 6, 4)             # the dish
+    px(s, color, 6, 3, 4, 2)
+    px(s, "white", 6, 4, 1, 1)           # highlight
     return s
 
 

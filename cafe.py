@@ -1,7 +1,10 @@
 """
-The Cozy Cafe interior -- a little restaurant minigame you run once you own the
-cafe on the street. Guests come in, sit at a table, order, wait for you to bring
-the food, eat, then ask for the check. You pay for ingredients (supplies).
+The Cozy Cafe interior -- a restaurant minigame you run once you own the cafe.
+
+Guests sit at a table and order a specific dish. You fire the order at the
+kitchen, it cooks, you pick it up when ready and carry it to the right guest.
+After eating they ask for the check -- grab it at the register and bring it over
+to get paid. Buy ingredient supplies, and spend on cafe-specific upgrades.
 """
 import random
 
@@ -10,7 +13,10 @@ from entities import Walker
 
 WALL, FLOOR, DOOR, COUNTER, TABLE = "wall", "floor", "door", "counter", "table"
 
-TABLE_SPOTS = [(5, 5), (9, 5), (14, 5), (5, 8), (9, 8), (14, 8)]
+BASE_TABLES = [(3, 4), (7, 4), (11, 4), (15, 4),
+               (3, 7), (7, 7), (11, 7), (15, 7)]
+PATIO_TABLES = [(3, 10), (7, 10), (11, 10), (15, 10)]
+FOOD_KEYS = list(CAFE_FOODS.keys())
 
 
 class Cafe:
@@ -20,25 +26,37 @@ class Cafe:
             self.grid[r][0] = self.grid[r][GRID_W - 1] = WALL
         for c in range(GRID_W):
             self.grid[0][c] = self.grid[GRID_H - 1][c] = WALL
-        # exit door (back to the street)
         for c in (9, 10):
             self.grid[GRID_H - 1][c] = DOOR
         self.door_tiles = {(9, GRID_H - 1), (10, GRID_H - 1)}
-        # kitchen pass counter along the top
+        # kitchen pass counter
         self.kitchen = []
-        for c in range(6, 14):
+        for c in range(5, 13):
             self.grid[2][c] = COUNTER
             self.kitchen.append((c, 2))
-        # ingredient supply crate (top-left)
+        # register (where you grab a guest's check) + supply crate
+        self.register = (17, 2)
+        self.grid[2][17] = COUNTER
         self.supply = (2, 2)
         self.grid[2][2] = WALL
-        # tables, each with a seat tile directly below it
         self.tables = []
-        for (tc, tr) in TABLE_SPOTS:
-            self.grid[tr][tc] = TABLE
-            self.tables.append({"table": (tc, tr), "seat": (tc, tr + 1),
-                                "guest": None})
+        for spot in BASE_TABLES:
+            self._add_table(spot)
+        self.has_patio = False
         self.entrance = (9, 11)
+
+    def _add_table(self, spot):
+        tc, tr = spot
+        self.grid[tr][tc] = TABLE
+        self.tables.append({"table": (tc, tr), "seat": (tc, tr + 1),
+                            "guest": None})
+
+    def add_patio(self):
+        if self.has_patio:
+            return
+        self.has_patio = True
+        for spot in PATIO_TABLES:
+            self._add_table(spot)
 
     def in_bounds(self, c, r):
         return 0 <= c < GRID_W and 0 <= r < GRID_H
@@ -65,10 +83,11 @@ class CafeGuest:
         self.state = "enter"
         self.table = None
         self.seat = None
-        self.order = None
-        self.think = random.uniform(1.2, 2.8)
+        self.order = random.choice(FOOD_KEYS)
+        self.fired = False          # kitchen has started cooking this order
+        self.think = random.uniform(1.0, 2.6)
         self.eat = random.uniform(4.0, 7.0)
-        self.patience = random.uniform(22, 34)
+        self.patience = random.uniform(24, 36)
         self.start_patience = self.patience
         self.done = False
         self.angry = False
@@ -92,7 +111,6 @@ class CafeGuest:
         elif self.state == "seated":
             self.think -= dt
             if self.think <= 0:
-                self.order = random.choice(CAFE_FOODS)
                 self.state = "ordered"
         elif self.state == "ordered":
             self.patience -= dt
